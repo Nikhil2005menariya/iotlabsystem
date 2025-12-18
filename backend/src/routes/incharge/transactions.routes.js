@@ -5,7 +5,8 @@ const auth = require('../../middlewares/auth.middleware');
 const role = require('../../middlewares/role.middleware');
 
 const {
-  issueTransaction
+  issueTransaction,
+  returnTransaction
 } = require('../../controllers/incharge.controller');
 
 // protect all in-charge routes
@@ -14,15 +15,7 @@ router.use(auth, role('incharge'));
 // issue items (approved → active)
 router.post('/issue/:transaction_id', issueTransaction);
 
-const {
-  issueTransaction,
-  returnTransaction
-} = require('../../controllers/incharge.controller');
-
-router.post('/issue/:transaction_id', issueTransaction);
-
 // return items (active → completed)
 router.post('/return/:transaction_id', returnTransaction);
-
 
 module.exports = router;

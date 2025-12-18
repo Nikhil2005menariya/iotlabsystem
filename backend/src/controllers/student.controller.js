@@ -1,5 +1,6 @@
 const Transaction = require('../models/Transaction');
 const Item = require('../models/Item');
+const Student = require('../models/Student');
 const crypto = require('crypto');
 const { sendMail } = require('../services/mail.service');
 
@@ -8,6 +9,8 @@ const { sendMail } = require('../services/mail.service');
 ============================ */
 
 exports.raiseTransaction = async (req, res) => {
+  console.log('RAISE TRANSACTION HIT', req.user);
+
   try {
     const {
       items,
@@ -20,9 +23,21 @@ exports.raiseTransaction = async (req, res) => {
       return res.status(400).json({ error: 'No items selected' });
     }
 
-    // Validate inventory
+    /* ============================
+       FETCH STUDENT (SOURCE OF TRUTH)
+    ============================ */
+    const student = await Student.findById(req.user.id);
+
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    /* ============================
+       VALIDATE INVENTORY
+    ============================ */
     for (const i of items) {
       const item = await Item.findById(i.item_id);
+
       if (!item || !item.is_active) {
         return res.status(400).json({ error: 'Invalid item selected' });
       }
@@ -37,45 +52,60 @@ exports.raiseTransaction = async (req, res) => {
       }
     }
 
+    /* ============================
+       GENERATE IDS
+    ============================ */
     const transactionId =
       'TXN-' + crypto.randomBytes(4).toString('hex').toUpperCase();
 
     const approvalToken = crypto.randomBytes(32).toString('hex');
 
+    /* ============================
+       CREATE TRANSACTION
+    ============================ */
     const transaction = await Transaction.create({
       transaction_id: transactionId,
-      student_id: req.user.id,
-      student_reg_no: req.user.reg_no, // optional fallback
+      student_id: student._id,
+      student_reg_no: student.reg_no, // ✅ FIXED
       faculty_email,
       faculty_id,
       expected_return_date,
       items,
+      status: 'raised',
       faculty_approval: {
-        approval_token: approvalToken
+        approval_token: approvalToken,
+        approved: false
       }
     });
 
-    // send approval email to faculty
-    const approvalLink = `${process.env.FRONTEND_URL}/faculty/approve?token=${approvalToken}`;
+    /* ============================
+       SEND FACULTY APPROVAL EMAIL
+    ============================ */
+    const approvalLink =
+      `${process.env.FRONTEND_URL}/faculty/approve?token=${approvalToken}`;
 
     await sendMail({
       to: faculty_email,
       subject: 'IoT Lab Component Borrow Approval',
       html: `
-        <p>A student has requested lab components.</p>
+        <p>
+          Student <b>${student.name}</b>
+          (Reg No: <b>${student.reg_no}</b>)
+          has requested lab components.
+        </p>
         <p>Transaction ID: <b>${transactionId}</b></p>
-        <a href="${approvalLink}">
-          Approve Request
-        </a>
+        <a href="${approvalLink}">Approve Request</a>
       `
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       transaction_id: transactionId
     });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Raise transaction error:', err);
+    return res.status(500).json({ error: err.message });
   }
 };
 
@@ -96,7 +126,7 @@ exports.getMyTransactions = async (req, res) => {
 };
 
 /* ============================
-   TRACK TRANSACTION
+   TRACK TRANSACTION BY ID
 ============================ */
 
 exports.getTransactionById = async (req, res) => {

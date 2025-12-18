@@ -65,81 +65,48 @@ exports.issueTransaction = async (req, res) => {
 };
 
 
-/* ============================
-   RETURN ITEMS (ACTIVE → COMPLETED)
-============================ */
-
 exports.returnTransaction = async (req, res) => {
   try {
-    const { transaction_id } = req.params;
-    const { items, damage_notes } = req.body;
+    const { returned_items } = req.body;
 
-    /*
-      items: [
-        {
-          item_id,
-          returned_quantity,
-          damaged_quantity
-        }
-      ]
-    */
+    if (!returned_items || returned_items.length === 0) {
+      return res.status(400).json({ error: 'No returned items provided' });
+    }
 
-    const transaction = await Transaction.findOne({ transaction_id })
-      .populate('items.item_id');
+    const transaction = await Transaction.findOne({
+      transaction_id: req.params.transaction_id,
+      status: 'active'
+    });
 
     if (!transaction) {
-      return res.status(404).json({ error: 'Transaction not found' });
+      return res.status(404).json({ error: 'Active transaction not found' });
     }
 
-    if (transaction.status !== 'active') {
-      return res.status(400).json({
-        error: `Transaction is ${transaction.status}, cannot return`
-      });
-    }
+    /* ============================
+       PROCESS RETURNS
+    ============================ */
+    for (const r of returned_items) {
+      const item = await Item.findById(r.item_id);
 
-    // Validate return data
-    for (const rItem of items) {
-      const tItem = transaction.items.find(
-        i => i.item_id._id.toString() === rItem.item_id
-      );
-
-      if (!tItem) {
-        return res.status(400).json({ error: 'Invalid item in return list' });
+      if (!item) {
+        return res.status(400).json({ error: 'Invalid item in return' });
       }
 
-      const totalReturned =
-        rItem.returned_quantity + rItem.damaged_quantity;
-
-      if (totalReturned !== tItem.issued_quantity) {
-        return res.status(400).json({
-          error: `Returned + damaged quantity must equal issued quantity for item ${tItem.item_id.name}`
-        });
+      if (r.damaged) {
+        item.damaged_quantity += r.quantity;
+      } else {
+        item.available_quantity += r.quantity;
       }
+
+      await item.save();
     }
 
-    // Process inventory updates
-    for (const rItem of items) {
-      const tItem = transaction.items.find(
-        i => i.item_id._id.toString() === rItem.item_id
-      );
-
-      const item = await Item.findById(tItem.item_id._id);
-
-      // Restore usable items
-      await Item.findByIdAndUpdate(item._id, {
-        $inc: {
-          available_quantity: rItem.returned_quantity,
-          damaged_quantity: rItem.damaged_quantity
-        }
-      });
-
-      tItem.returned_quantity = rItem.returned_quantity;
-      tItem.damaged_quantity = rItem.damaged_quantity;
-    }
-
+    /* ============================
+       CLOSE TRANSACTION
+    ============================ */
     transaction.status = 'completed';
     transaction.actual_return_date = new Date();
-    transaction.damage_notes = damage_notes;
+    transaction.returned_items = returned_items;
 
     await transaction.save();
 
@@ -148,7 +115,9 @@ exports.returnTransaction = async (req, res) => {
       message: 'Transaction completed successfully',
       transaction_id: transaction.transaction_id
     });
+
   } catch (err) {
+    console.error('Return transaction error:', err);
     res.status(500).json({ error: err.message });
   }
 };

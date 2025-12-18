@@ -1,19 +1,24 @@
 require('dotenv').config();
-const express = require('express');
+
+const app = require('./app');          // ✅ USE app.js
 const connectDB = require('./config/db');
-const startOverdueJob = require('./jobs/overdue.job');
 const { verifyMail } = require('./config/mail');
+const startOverdueJob = require('./jobs/overdue.job');
 
+const startServer = async () => {
+  try {
+    await connectDB();
+    verifyMail();
+    startOverdueJob();
 
-connectDB();
-verifyMail();
-startOverdueJob();
+    const PORT = process.env.PORT || 5050;
 
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Server startup failed:', err);
+  }
+};
 
-const app = express();
-app.use(express.json());
-
-app.get('/health', (_, res) => res.send('Backend OK'));
-
-
-app.listen(5000, () => console.log('Server running on port 5000'));
+startServer();

@@ -32,8 +32,27 @@ const studentSchema = new mongoose.Schema(
     is_active: {
       type: Boolean,
       default: true
-    }
+    },
+    is_verified: {
+      type: Boolean,
+      default: false
+    },
+    
+    email_verification_token: {
+      type: String,
+      select: false
+    },
+    
+    reset_otp: {
+      type: String,
+      select: false
+    },
+    reset_otp_expiry: {
+      type: Date,
+      select: false
+    },
   },
+
   { timestamps: true }
 );
 

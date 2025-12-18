@@ -44,7 +44,14 @@ const itemSchema = new mongoose.Schema(
     is_active: {
       type: Boolean,
       default: true
-    }
+    },
+    tracking_type: {
+      type: String,
+      enum: ['bulk', 'asset'],
+      required: true,
+      default: 'bulk'   // 🔑 VERY IMPORTANT for backward compatibility
+    },
+
   },
   { timestamps: true }
 );

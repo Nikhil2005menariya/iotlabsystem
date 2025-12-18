@@ -317,3 +317,85 @@ exports.inchargeResetPassword = async (req, res) => {
 
   res.json({ message: 'Password reset successful' });
 };
+
+// update email 
+
+
+exports.requestStaffEmailChange = async (req, res) => {
+  try {
+    const { new_email } = req.body;
+
+    const staff = await Staff.findById(req.user.id);
+    if (!staff) {
+      return res.status(404).json({ error: 'Staff not found' });
+    }
+
+    // prevent duplicate email
+    const emailExists = await Staff.findOne({ email: new_email });
+    if (emailExists) {
+      return res.status(400).json({ error: 'Email already in use' });
+    }
+
+    const otp = crypto.randomInt(100000, 999999).toString();
+
+    staff.email_change_otp =
+      crypto.createHash('sha256').update(otp).digest('hex');
+
+    staff.email_change_otp_expiry = Date.now() + 10 * 60 * 1000;
+    staff.pending_email = new_email;
+
+    await staff.save();
+
+    await sendMail({
+      to: new_email,
+      subject: 'Confirm Email Change – IoT Lab',
+      html: `
+        <p>Your OTP to confirm email change is:</p>
+        <h3>${otp}</h3>
+        <p>This OTP is valid for 10 minutes.</p>
+      `
+    });
+
+    res.json({
+      success: true,
+      message: 'OTP sent to new email'
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.confirmStaffEmailChange = async (req, res) => {
+  try {
+    const { otp } = req.body;
+
+    const hashedOtp =
+      crypto.createHash('sha256').update(otp).digest('hex');
+
+    const staff = await Staff.findOne({
+      _id: req.user.id,
+      email_change_otp: hashedOtp,
+      email_change_otp_expiry: { $gt: Date.now() }
+    });
+
+    if (!staff || !staff.pending_email) {
+      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    }
+
+    staff.email = staff.pending_email;
+    staff.pending_email = undefined;
+    staff.email_change_otp = undefined;
+    staff.email_change_otp_expiry = undefined;
+
+    await staff.save();
+
+    res.json({
+      success: true,
+      message: 'Email updated successfully'
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};

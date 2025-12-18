@@ -1,13 +1,12 @@
+const crypto = require('crypto');
 const Transaction = require('../models/Transaction');
 const Item = require('../models/Item');
 const Student = require('../models/Student');
-const crypto = require('crypto');
 const { sendMail } = require('../services/mail.service');
 
 /* ============================
-   RAISE TRANSACTION
+   RAISE TRANSACTION (FINAL)
 ============================ */
-
 exports.raiseTransaction = async (req, res) => {
   console.log('RAISE TRANSACTION HIT', req.user);
 
@@ -19,7 +18,7 @@ exports.raiseTransaction = async (req, res) => {
       expected_return_date
     } = req.body;
 
-    if (!items || items.length === 0) {
+    if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'No items selected' });
     }
 
@@ -33,22 +32,44 @@ exports.raiseTransaction = async (req, res) => {
     }
 
     /* ============================
-       VALIDATE INVENTORY
+       VALIDATE INVENTORY REQUEST
     ============================ */
-    for (const i of items) {
-      const item = await Item.findById(i.item_id);
+    for (const reqItem of items) {
+      const item = await Item.findById(reqItem.item_id);
 
       if (!item || !item.is_active) {
-        return res.status(400).json({ error: 'Invalid item selected' });
+        return res.status(400).json({
+          error: 'Invalid or inactive item selected'
+        });
       }
 
-      const usableQty =
-        item.available_quantity - item.reserved_quantity;
+      /* ===== BULK ITEM ===== */
+      if (item.tracking_type === 'bulk') {
+        if (!reqItem.quantity || reqItem.quantity <= 0) {
+          return res.status(400).json({
+            error: `Quantity required for ${item.name}`
+          });
+        }
 
-      if (usableQty < i.quantity) {
-        return res.status(400).json({
-          error: `Insufficient quantity for ${item.name}`
-        });
+        const usableQty =
+          item.available_quantity - item.reserved_quantity;
+
+        if (usableQty < reqItem.quantity) {
+          return res.status(400).json({
+            error: `Insufficient quantity for ${item.name}`
+          });
+        }
+      }
+
+      /* ===== ASSET ITEM ===== */
+      if (item.tracking_type === 'asset') {
+        if (!reqItem.quantity || reqItem.quantity <= 0) {
+          return res.status(400).json({
+            error: `Quantity required for asset item ${item.name}`
+          });
+        }
+
+        // Availability is checked later by in-charge via asset tags
       }
     }
 
@@ -58,23 +79,34 @@ exports.raiseTransaction = async (req, res) => {
     const transactionId =
       'TXN-' + crypto.randomBytes(4).toString('hex').toUpperCase();
 
-    const approvalToken = crypto.randomBytes(32).toString('hex');
+    const approvalToken =
+      crypto.randomBytes(32).toString('hex');
+
+    /* ============================
+       NORMALIZE TRANSACTION ITEMS
+       (NO ASSET TAGS HERE)
+    ============================ */
+    const normalizedItems = items.map(i => ({
+      item_id: i.item_id,
+      quantity: i.quantity,
+      asset_tags: []   // 🔐 asset tags added ONLY by in-charge
+    }));
 
     /* ============================
        CREATE TRANSACTION
     ============================ */
-    const transaction = await Transaction.create({
+    await Transaction.create({
       transaction_id: transactionId,
       student_id: student._id,
-      student_reg_no: student.reg_no, // ✅ FIXED
+      student_reg_no: student.reg_no,
       faculty_email,
       faculty_id,
       expected_return_date,
-      items,
+      items: normalizedItems,
       status: 'raised',
       faculty_approval: {
-        approval_token: approvalToken,
-        approved: false
+        approved: false,
+        approval_token: approvalToken
       }
     });
 
@@ -108,6 +140,7 @@ exports.raiseTransaction = async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 };
+
 
 /* ============================
    STUDENT TRANSACTION HISTORY

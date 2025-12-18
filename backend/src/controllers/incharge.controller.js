@@ -1,51 +1,93 @@
 const Transaction = require('../models/Transaction');
 const Item = require('../models/Item');
+const ItemAsset = require('../models/ItemAsset');
 
 /* ============================
    ISSUE ITEMS (APPROVED → ACTIVE)
 ============================ */
-
 exports.issueTransaction = async (req, res) => {
   try {
     const { transaction_id } = req.params;
+    const { items } = req.body; // 🔥 asset tags come here
 
-    const transaction = await Transaction.findOne({ transaction_id })
-      .populate('items.item_id');
+    const transaction = await Transaction.findOne({
+      transaction_id,
+      status: 'approved'
+    });
 
     if (!transaction) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-
-    if (transaction.status !== 'approved') {
-      return res.status(400).json({
-        error: `Transaction is ${transaction.status}, cannot issue`
+      return res.status(404).json({
+        error: 'Transaction not found or not approved'
       });
     }
 
-    // Validate inventory again (safety)
+    /* ============================
+       PROCESS EACH TRANSACTION ITEM
+    ============================ */
     for (const tItem of transaction.items) {
-      const item = await Item.findById(tItem.item_id._id);
+      const item = await Item.findById(tItem.item_id);
 
-      const usableQty =
-        item.available_quantity - item.reserved_quantity;
-
-      if (usableQty < tItem.quantity) {
-        return res.status(400).json({
-          error: `Insufficient stock for ${item.name}`
-        });
+      if (!item) {
+        return res.status(400).json({ error: 'Invalid item in transaction' });
       }
-    }
 
-    // Deduct inventory
-    for (const tItem of transaction.items) {
-      await Item.findByIdAndUpdate(
-        tItem.item_id._id,
-        {
-          $inc: { available_quantity: -tItem.quantity }
+      /* ========= BULK ITEM ========= */
+      if (item.tracking_type === 'bulk') {
+        const usableQty =
+          item.available_quantity - item.reserved_quantity;
+
+        if (usableQty < tItem.quantity) {
+          return res.status(400).json({
+            error: `Insufficient stock for ${item.name}`
+          });
         }
-      );
 
-      tItem.issued_quantity = tItem.quantity;
+        item.available_quantity -= tItem.quantity;
+        tItem.issued_quantity = tItem.quantity;
+
+        await item.save();
+      }
+
+      /* ========= ASSET ITEM ========= */
+      if (item.tracking_type === 'asset') {
+        // Find asset tags provided for this item
+        const issuedAsset = items?.find(
+          i => String(i.item_id) === String(item._id)
+        );
+
+        if (!issuedAsset || !issuedAsset.asset_tags?.length) {
+          return res.status(400).json({
+            error: `Asset tags required for ${item.name}`
+          });
+        }
+
+        if (issuedAsset.asset_tags.length !== tItem.quantity) {
+          return res.status(400).json({
+            error: `Asset tag count mismatch for ${item.name}`
+          });
+        }
+
+        for (const tag of issuedAsset.asset_tags) {
+          const asset = await ItemAsset.findOne({
+            asset_tag: tag,
+            item_id: item._id,
+            status: 'available'
+          });
+
+          if (!asset) {
+            return res.status(400).json({
+              error: `Asset ${tag} not available`
+            });
+          }
+
+          asset.status = 'issued';
+          asset.last_transaction_id = transaction._id;
+          await asset.save();
+        }
+
+        tItem.asset_tags = issuedAsset.asset_tags;
+        tItem.issued_quantity = issuedAsset.asset_tags.length;
+      }
     }
 
     transaction.status = 'active';
@@ -57,20 +99,26 @@ exports.issueTransaction = async (req, res) => {
     res.json({
       success: true,
       message: 'Items issued successfully',
-      transaction_id: transaction.transaction_id
+      transaction_id
     });
+
   } catch (err) {
+    console.error('Issue transaction error:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-
+/* ============================
+   RETURN ITEMS (ACTIVE → COMPLETED)
+============================ */
 exports.returnTransaction = async (req, res) => {
   try {
     const { returned_items } = req.body;
 
     if (!returned_items || returned_items.length === 0) {
-      return res.status(400).json({ error: 'No returned items provided' });
+      return res.status(400).json({
+        error: 'No returned items provided'
+      });
     }
 
     const transaction = await Transaction.findOne({
@@ -79,34 +127,71 @@ exports.returnTransaction = async (req, res) => {
     });
 
     if (!transaction) {
-      return res.status(404).json({ error: 'Active transaction not found' });
+      return res.status(404).json({
+        error: 'Active transaction not found'
+      });
     }
 
     /* ============================
        PROCESS RETURNS
     ============================ */
-    for (const r of returned_items) {
-      const item = await Item.findById(r.item_id);
+    for (const rItem of returned_items) {
+      const item = await Item.findById(rItem.item_id);
 
       if (!item) {
         return res.status(400).json({ error: 'Invalid item in return' });
       }
 
-      if (r.damaged) {
-        item.damaged_quantity += r.quantity;
-      } else {
-        item.available_quantity += r.quantity;
+      /* ========= BULK ITEM ========= */
+      if (item.tracking_type === 'bulk') {
+        item.available_quantity += rItem.quantity;
+
+        if (rItem.damaged) {
+          item.damaged_quantity += rItem.quantity;
+        }
+
+        await item.save();
       }
 
-      await item.save();
+      /* ========= ASSET ITEM ========= */
+      if (item.tracking_type === 'asset') {
+        if (!rItem.asset_tags || rItem.asset_tags.length === 0) {
+          return res.status(400).json({
+            error: `Asset tags required for ${item.name}`
+          });
+        }
+
+        for (const tag of rItem.asset_tags) {
+          const asset = await ItemAsset.findOne({
+            asset_tag: tag,
+            item_id: item._id,
+            status: 'issued'
+          });
+
+          if (!asset) {
+            return res.status(400).json({
+              error: `Asset ${tag} not issued or invalid`
+            });
+          }
+
+          if (rItem.damaged) {
+            asset.status = 'damaged';
+            asset.condition = 'broken';
+            item.damaged_quantity += 1;
+          } else {
+            asset.status = 'available';
+          }
+
+          asset.last_transaction_id = transaction._id;
+          await asset.save();
+        }
+
+        await item.save();
+      }
     }
 
-    /* ============================
-       CLOSE TRANSACTION
-    ============================ */
     transaction.status = 'completed';
     transaction.actual_return_date = new Date();
-    transaction.returned_items = returned_items;
 
     await transaction.save();
 
@@ -121,4 +206,3 @@ exports.returnTransaction = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-

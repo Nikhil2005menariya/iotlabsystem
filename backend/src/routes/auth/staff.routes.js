@@ -1,8 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { staffLogin } = require('../../controllers/auth.controller');
 
+// middlewares
+const auth = require('../../middlewares/auth.middleware');
+const role = require('../../middlewares/role.middleware');
+
+// controllers
 const {
+  staffLogin,
   adminLogin,
   forgotPassword,
   resetPassword,
@@ -12,12 +17,24 @@ const {
   confirmStaffEmailChange,
 } = require('../../controllers/auth.controller');
 
+// ================= AUTH ROUTES =================
+
+// Staff / Admin login
 router.post('/login', staffLogin);
+// If you have a separate admin login, uncomment this
+// router.post('/admin/login', adminLogin);
+
+// Password reset flows
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
+
+// In-charge password reset
 router.post('/incharge/forgot-password', inchargeForgotPassword);
 router.post('/incharge/reset-password', inchargeResetPassword);
-// 🔐 Admin + Incharge only
+
+// ================= PROTECTED ROUTES =================
+// Admin + In-charge only
+
 router.post(
   '/change-email/request',
   auth,

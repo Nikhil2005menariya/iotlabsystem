@@ -11,6 +11,8 @@ const itemRoutes = require('./items.routes');
 const transactionRoutes = require('./transactions.routes');
 const overdueRoutes = require('./overdue.routes');
 
+
+router.use('/analysis', require('../../analysis/analysis.routes'));
 router.use('/items', itemRoutes);
 router.use('/transactions', transactionRoutes);
 router.use('/overdue', overdueRoutes);

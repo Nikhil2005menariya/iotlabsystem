@@ -88,35 +88,189 @@ exports.addItem = async (req, res) => {
   }
 };
 
+
+
+
+
 /* ============================
-   UPDATE ITEM (METADATA ONLY)
+   UPDATE ITEM (FULL STOCK LOGIC)
 ============================ */
 exports.updateItem = async (req, res) => {
   try {
     const item = await Item.findById(req.params.id);
-
     if (!item) {
       return res.status(404).json({ error: 'Item not found' });
     }
 
-    // ❗ Do NOT allow tracking type change after creation
+    /* ============================
+       PREVENT TRACKING TYPE CHANGE
+    ============================ */
     if (
       req.body.tracking_type &&
       req.body.tracking_type !== item.tracking_type
     ) {
       return res.status(400).json({
-        error: 'Tracking type cannot be changed after item creation'
+        error: 'Tracking type cannot be changed after item creation',
       });
     }
 
+    const addQty = Number(req.body.add_quantity || 0);
+    const removeAssetTags = req.body.remove_asset_tags || [];
+    const createdAssets = [];
+
+    /* ============================
+       ADD STOCK
+    ============================ */
+    if (addQty > 0) {
+      item.initial_quantity += addQty;
+      item.available_quantity += addQty;
+
+      if (item.tracking_type === 'asset') {
+        const existingCount = await ItemAsset.countDocuments({
+          item_id: item._id,
+        });
+
+        for (let i = 0; i < addQty; i++) {
+          const seq = existingCount + i + 1;
+          const assetTag = `${item.sku}-${String(seq).padStart(4, '0')}`;
+
+          const asset = await ItemAsset.create({
+            item_id: item._id,
+            asset_tag: assetTag,
+            status: 'available',
+            condition: 'good',
+            location: item.location,
+          });
+
+          createdAssets.push(asset);
+        }
+      }
+    }
+
+    /* ============================
+       REMOVE STOCK (ASSET)
+    ============================ */
+    if (
+      addQty < 0 &&
+      item.tracking_type === 'asset' &&
+      Array.isArray(removeAssetTags) &&
+      removeAssetTags.length > 0
+    ) {
+      const assets = await ItemAsset.find({
+        item_id: item._id,
+        asset_tag: { $in: removeAssetTags },
+        status: 'available',
+      });
+
+      if (assets.length !== removeAssetTags.length) {
+        return res.status(400).json({
+          error: 'One or more selected assets are not available',
+        });
+      }
+
+      // deactivate assets
+      await ItemAsset.updateMany(
+        { _id: { $in: assets.map(a => a._id) } },
+        { $set: { status: 'removed' } }
+      );
+
+      item.initial_quantity -= assets.length;
+      item.available_quantity -= assets.length;
+    }
+
+    /* ============================
+       REMOVE STOCK (BULK)
+    ============================ */
+    if (addQty < 0 && item.tracking_type === 'bulk') {
+      const removeQty = Math.abs(addQty);
+
+      if (removeQty > item.available_quantity) {
+        return res.status(400).json({
+          error: 'Cannot remove more than available quantity',
+        });
+      }
+
+      item.initial_quantity -= removeQty;
+      item.available_quantity -= removeQty;
+    }
+
+    /* ============================
+       CLEAN REQUEST BODY
+    ============================ */
+    delete req.body.add_quantity;
+    delete req.body.remove_asset_tags;
+    delete req.body.tracking_type;
+    delete req.body.initial_quantity;
+    delete req.body.available_quantity;
+
+    /* ============================
+       UPDATE METADATA
+    ============================ */
     Object.assign(item, req.body);
     await item.save();
 
-    res.json({ success: true, data: item });
+    return res.json({
+      success: true,
+      data: item,
+      created_assets: createdAssets, // 👈 frontend dialog
+    });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    console.error('UPDATE ITEM ERROR:', err);
+    return res.status(500).json({
+      error: 'Failed to update item',
+    });
   }
 };
+
+
+
+
+/* ============================
+   GET ITEM ASSETS (FILTERABLE)
+============================ */
+exports.getItemAssets = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.query;
+
+    // Validate item
+    const item = await Item.findById(id);
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    // Only asset-tracked items
+    if (item.tracking_type !== 'asset') {
+      return res.status(400).json({
+        error: 'This item does not support asset tracking',
+      });
+    }
+
+    // Build query
+    const filter = { item_id: item._id };
+    if (status) {
+      filter.status = status; // e.g. available, removed, damaged
+    }
+
+    const assets = await ItemAsset.find(filter)
+      .select('asset_tag status -_id')
+      .sort({ asset_tag: 1 })
+      .lean();
+
+    return res.json({
+      success: true,
+      data: assets,
+    });
+  } catch (err) {
+    console.error('GET ITEM ASSETS ERROR:', err);
+    return res.status(500).json({
+      error: 'Failed to fetch item assets',
+    });
+  }
+};
+
+
+
 
 /* ============================
    SOFT DELETE ITEM
@@ -217,3 +371,27 @@ exports.getOverdueTransactions = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+/* ============================
+   GET SINGLE ITEM BY ID
+============================ */
+exports.getItemById = async (req, res) => {
+  try {
+    const item = await Item.findOne({
+      _id: req.params.id,
+      is_active: true,
+    });
+
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    res.json({
+      success: true,
+      data: item,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+

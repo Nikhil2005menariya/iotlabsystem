@@ -321,13 +321,16 @@ exports.getTransactionHistory = async (req, res) => {
   try {
     const transactions = await Transaction.find()
       .populate('student_id', 'name reg_no email')
+      .populate('items.item_id', 'name sku tracking_type') // ✅ FIX
       .sort({ createdAt: -1 });
 
     res.json({ success: true, data: transactions });
   } catch (err) {
+    console.error('GET TRANSACTION HISTORY ERROR:', err);
     res.status(500).json({ error: err.message });
   }
 };
+
 
 /* ============================
    SEARCH TRANSACTIONS
@@ -345,32 +348,36 @@ exports.searchTransactions = async (req, res) => {
 
     const transactions = await Transaction.find(filter)
       .populate('student_id', 'name reg_no email')
+      .populate('items.item_id', 'name sku tracking_type') // ✅ FIX
       .sort({ createdAt: -1 });
 
     res.json({ success: true, data: transactions });
   } catch (err) {
+    console.error('SEARCH TRANSACTIONS ERROR:', err);
     res.status(500).json({ error: err.message });
   }
 };
+
 
 /* =========================
    OVERDUE TRANSACTIONS
 ========================= */
 exports.getOverdueTransactions = async (req, res) => {
   try {
-    const today = new Date();
-
     const overdue = await Transaction.find({
       status: 'overdue'
     })
       .populate('student_id', 'name reg_no email')
+      .populate('items.item_id', 'name sku tracking_type') // ✅ FIX
       .sort({ expected_return_date: 1 });
 
     res.json({ success: true, data: overdue });
   } catch (err) {
+    console.error('GET OVERDUE TRANSACTIONS ERROR:', err);
     res.status(500).json({ error: err.message });
   }
 };
+
 
 /* ============================
    GET SINGLE ITEM BY ID

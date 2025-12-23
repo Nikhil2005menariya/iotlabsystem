@@ -8,7 +8,6 @@ const { sendMail } = require('../services/mail.service');
    RAISE TRANSACTION (FINAL)
 ============================ */
 exports.raiseTransaction = async (req, res) => {
-  console.log('RAISE TRANSACTION HIT', req.user);
 
   try {
     const {

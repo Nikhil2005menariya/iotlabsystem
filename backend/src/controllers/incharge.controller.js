@@ -108,17 +108,12 @@ exports.issueTransaction = async (req, res) => {
   }
 };
 
-/* ============================
-   RETURN ITEMS (ACTIVE → COMPLETED)
-============================ */
 exports.returnTransaction = async (req, res) => {
   try {
     const { returned_items } = req.body;
 
-    if (!returned_items || returned_items.length === 0) {
-      return res.status(400).json({
-        error: 'No returned items provided'
-      });
+    if (!Array.isArray(returned_items) || returned_items.length === 0) {
+      return res.status(400).json({ error: 'No returned items provided' });
     }
 
     const transaction = await Transaction.findOne({
@@ -127,50 +122,78 @@ exports.returnTransaction = async (req, res) => {
     });
 
     if (!transaction) {
-      return res.status(404).json({
-        error: 'Active transaction not found'
-      });
+      return res.status(404).json({ error: 'Active transaction not found' });
     }
 
-    /* ============================
-       PROCESS RETURNS
-    ============================ */
     for (const rItem of returned_items) {
       const item = await Item.findById(rItem.item_id);
+      if (!item) return res.status(400).json({ error: 'Invalid item' });
 
-      if (!item) {
-        return res.status(400).json({ error: 'Invalid item in return' });
+      const txnItem = transaction.items.find(
+        t => t.item_id.toString() === item._id.toString()
+      );
+
+      if (!txnItem) {
+        return res.status(400).json({
+          error: `Item ${item.name} not part of transaction`
+        });
       }
 
-      /* ========= BULK ITEM ========= */
+      /* ================= BULK ================= */
       if (item.tracking_type === 'bulk') {
-        item.available_quantity += rItem.quantity;
+        const qty = Number(rItem.quantity);
+
+        if (!Number.isFinite(qty) || qty <= 0) {
+          return res.status(400).json({ error: 'Invalid quantity' });
+        }
+
+        item.available_quantity = Number(item.available_quantity) || 0;
+        item.available_quantity += qty;
+
+        txnItem.returned_quantity += qty;
 
         if (rItem.damaged) {
-          item.damaged_quantity += rItem.quantity;
+          item.damaged_quantity += qty;
+          txnItem.damaged_quantity += qty;
         }
 
         await item.save();
       }
 
-      /* ========= ASSET ITEM ========= */
+      /* ================= ASSET ================= */
       if (item.tracking_type === 'asset') {
-        if (!rItem.asset_tags || rItem.asset_tags.length === 0) {
+        if (!Array.isArray(rItem.asset_tags) || rItem.asset_tags.length === 0) {
           return res.status(400).json({
             error: `Asset tags required for ${item.name}`
           });
         }
 
-        for (const tag of rItem.asset_tags) {
+        for (const rawTag of rItem.asset_tags) {
+          const tag = rawTag.trim().toUpperCase();
+
+          if (!txnItem.asset_tags.includes(tag)) {
+            return res.status(400).json({
+              error: `Asset ${tag} not issued in this transaction`
+            });
+          }
+
+          if (
+            txnItem.returned_quantity + txnItem.damaged_quantity >=
+            txnItem.issued_quantity
+          ) {
+            return res.status(400).json({
+              error: `Asset ${tag} already returned or damaged`
+            });
+          }
+
           const asset = await ItemAsset.findOne({
             asset_tag: tag,
-            item_id: item._id,
-            status: 'issued'
+            item_id: item._id
           });
 
           if (!asset) {
             return res.status(400).json({
-              error: `Asset ${tag} not issued or invalid`
+              error: `Asset ${tag} record missing`
             });
           }
 
@@ -178,8 +201,10 @@ exports.returnTransaction = async (req, res) => {
             asset.status = 'damaged';
             asset.condition = 'broken';
             item.damaged_quantity += 1;
+            txnItem.damaged_quantity += 1;
           } else {
             asset.status = 'available';
+            txnItem.returned_quantity += 1;
           }
 
           asset.last_transaction_id = transaction._id;
@@ -192,7 +217,6 @@ exports.returnTransaction = async (req, res) => {
 
     transaction.status = 'completed';
     transaction.actual_return_date = new Date();
-
     await transaction.save();
 
     res.json({

@@ -9,6 +9,7 @@ const {
   returnTransaction,
   getActiveTransactions,
   getPendingTransactions,
+  getAvailableAssetsByItem,
 
 } = require('../../controllers/incharge.controller');
 
@@ -23,4 +24,5 @@ router.post('/return/:transaction_id', returnTransaction);
 
 router.get('/pending', getPendingTransactions);
 router.get('/active', getActiveTransactions);
+router.get('/assets/:itemId/available', getAvailableAssetsByItem);
 module.exports = router;

@@ -236,3 +236,28 @@ const transactions = await Transaction.find({ status: 'approved' })
 
   res.json({ success: true, data: transactions });
 };
+
+
+/* ============================
+   GET AVAILABLE ASSETS FOR ITEM
+============================ */
+exports.getAvailableAssetsByItem = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+
+    const assets = await ItemAsset.find({
+      item_id: itemId,
+      status: 'available',
+    }).select('asset_tag status');
+
+    res.json({
+      success: true,
+      data: assets,
+    });
+  } catch (err) {
+    console.error('Get available assets error:', err);
+    res.status(500).json({
+      error: 'Failed to load available assets',
+    });
+  }
+};

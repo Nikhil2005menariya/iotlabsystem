@@ -206,3 +206,33 @@ exports.returnTransaction = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+exports.getActiveTransactions = async (req, res) => {
+  try {
+  const transactions = await Transaction.find({ status: 'active' })
+  .populate('student_id', 'name reg_no')
+  .populate('items.item_id', 'name tracking_type') // ✅ FIX
+  .sort({ createdAt: -1 });
+
+
+    res.json({
+      success: true,
+      data: transactions,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: 'Failed to load active transactions',
+    });
+  }
+};
+
+exports.getPendingTransactions = async (req, res) => {
+const transactions = await Transaction.find({ status: 'approved' })
+  .populate('student_id', 'name reg_no')
+  .populate('items.item_id', 'name tracking_type') // ✅ FIX
+  .sort({ createdAt: -1 });
+
+
+  res.json({ success: true, data: transactions });
+};

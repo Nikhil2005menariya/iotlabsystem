@@ -6,7 +6,10 @@ const role = require('../../middlewares/role.middleware');
 
 const {
   issueTransaction,
-  returnTransaction
+  returnTransaction,
+  getActiveTransactions,
+  getPendingTransactions,
+
 } = require('../../controllers/incharge.controller');
 
 // protect all in-charge routes
@@ -18,4 +21,6 @@ router.post('/issue/:transaction_id', issueTransaction);
 // return items (active → completed)
 router.post('/return/:transaction_id', returnTransaction);
 
+router.get('/pending', getPendingTransactions);
+router.get('/active', getActiveTransactions);
 module.exports = router;

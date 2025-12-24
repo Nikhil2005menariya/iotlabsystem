@@ -36,6 +36,17 @@ const itemSchema = new mongoose.Schema(
       default: 0
     },
 
+    total_quantity: {
+  type: Number,
+  default: function () {
+    return this.initial_quantity;
+  }
+},
+last_asset_seq: {
+  type: Number,
+  default: 0
+},
+
     min_threshold_quantity: {
       type: Number,
       default: 5

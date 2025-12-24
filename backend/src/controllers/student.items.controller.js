@@ -10,12 +10,21 @@ exports.getAvailableItemsForStudent = async (req, res) => {
         category: 1,
         description: 1,
         tracking_type: 1,
-        available_quantity: 1
+        available_quantity: 1,
+        total_quantity: 1,          // ✅ REQUIRED
+        min_threshold_quantity: 1   // ✅ REQUIRED (low-stock UI)
       }
     ).sort({ name: 1 });
 
-    res.json({ success: true, data: items });
+    res.json({
+      success: true,
+      data: items
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('STUDENT ITEMS ERROR:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load available items'
+    });
   }
 };

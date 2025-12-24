@@ -7,7 +7,7 @@ const Transaction = require('../models/Transaction');
 ========================= */
 
 /* ============================
-   ADD ITEM (BULK / ASSET)
+   ADD ITEM (FINAL – SAFE)
 ============================ */
 exports.addItem = async (req, res) => {
   try {
@@ -28,7 +28,13 @@ exports.addItem = async (req, res) => {
       return res.status(400).json({ error: 'Invalid tracking type' });
     }
 
-    // 1️⃣ Create item
+    if (!initial_quantity || initial_quantity <= 0) {
+      return res.status(400).json({
+        error: 'Initial quantity must be greater than 0'
+      });
+    }
+
+    /* ================= CREATE ITEM ================= */
     const item = await Item.create({
       name,
       sku,
@@ -37,28 +43,30 @@ exports.addItem = async (req, res) => {
       location,
       description,
       tracking_type,
-      initial_quantity,
+
+      // ✅ LIVE FIELDS
+      total_quantity: initial_quantity,
       available_quantity: initial_quantity,
-      min_threshold_quantity
+
+      // 📜 HISTORICAL
+      initial_quantity,
+
+      min_threshold_quantity,
+
+      // 🔐 ASSET COUNTER
+      last_asset_seq: tracking_type === 'asset' ? initial_quantity : 0
     });
 
-    // 2️⃣ Generate asset tags if asset-tracked
-    let generatedAssetTags = [];
+    const generatedAssetTags = [];
 
+    /* ================= CREATE ASSETS ================= */
     if (tracking_type === 'asset') {
-      if (!initial_quantity || initial_quantity <= 0) {
-        return res.status(400).json({
-          error: 'Initial quantity required for asset-tracked items'
-        });
-      }
-
       const prefix = asset_prefix || sku;
 
       const assets = [];
 
       for (let i = 1; i <= initial_quantity; i++) {
         const assetTag = `${prefix}-${String(i).padStart(4, '0')}`;
-
         generatedAssetTags.push(assetTag);
 
         assets.push({
@@ -73,27 +81,20 @@ exports.addItem = async (req, res) => {
       await ItemAsset.insertMany(assets);
     }
 
-    // 3️⃣ Respond with generated labels
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Item added successfully',
-      item,
-      generated_asset_tags:
-        tracking_type === 'asset' ? generatedAssetTags : []
+      data: item,
+      generated_asset_tags: generatedAssetTags
     });
 
   } catch (err) {
-    console.error('Add item error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('ADD ITEM ERROR:', err);
+    return res.status(500).json({ error: err.message });
   }
 };
-
-
-
-
-
 /* ============================
-   UPDATE ITEM (FULL STOCK LOGIC)
+   UPDATE ITEM (FINAL – BACKWARD COMPATIBLE)
 ============================ */
 exports.updateItem = async (req, res) => {
   try {
@@ -102,9 +103,7 @@ exports.updateItem = async (req, res) => {
       return res.status(404).json({ error: 'Item not found' });
     }
 
-    /* ============================
-       PREVENT TRACKING TYPE CHANGE
-    ============================ */
+    /* ===== tracking_type is immutable ===== */
     if (
       req.body.tracking_type &&
       req.body.tracking_type !== item.tracking_type
@@ -118,21 +117,42 @@ exports.updateItem = async (req, res) => {
     const removeAssetTags = req.body.remove_asset_tags || [];
     const createdAssets = [];
 
-    /* ============================
-       ADD STOCK
-    ============================ */
+    /* =================================================
+       ENSURE last_asset_seq EXISTS (AUTO-INIT)
+       ================================================= */
+    if (
+      item.tracking_type === 'asset' &&
+      typeof item.last_asset_seq !== 'number'
+    ) {
+      const lastAsset = await ItemAsset.findOne({ item_id: item._id })
+        .sort({ asset_tag: -1 })
+        .lean();
+
+      if (lastAsset?.asset_tag) {
+        const match = lastAsset.asset_tag.match(/(\d+)$/);
+        item.last_asset_seq = match ? parseInt(match[1], 10) : 0;
+      } else {
+        item.last_asset_seq = 0;
+      }
+    }
+
+    /* ================= ADD STOCK ================= */
     if (addQty > 0) {
-      item.initial_quantity += addQty;
-      item.available_quantity += addQty;
 
+      /* ===== BULK ===== */
+      if (item.tracking_type === 'bulk') {
+        item.total_quantity += addQty;
+        item.available_quantity += addQty;
+      }
+
+      /* ===== ASSET ===== */
       if (item.tracking_type === 'asset') {
-        const existingCount = await ItemAsset.countDocuments({
-          item_id: item._id,
-        });
-
         for (let i = 0; i < addQty; i++) {
-          const seq = existingCount + i + 1;
-          const assetTag = `${item.sku}-${String(seq).padStart(4, '0')}`;
+          item.last_asset_seq += 1;
+
+          const assetTag = `${item.sku}-${String(
+            item.last_asset_seq
+          ).padStart(4, '0')}`;
 
           const asset = await ItemAsset.create({
             item_id: item._id,
@@ -142,18 +162,19 @@ exports.updateItem = async (req, res) => {
             location: item.location,
           });
 
+          // ✅ RETURN FULL OBJECT (OLD BEHAVIOR)
           createdAssets.push(asset);
         }
+
+        item.total_quantity += addQty;
+        item.available_quantity += addQty;
       }
     }
 
-    /* ============================
-       REMOVE STOCK (ASSET)
-    ============================ */
+    /* ================= REMOVE ASSET STOCK ================= */
     if (
       addQty < 0 &&
       item.tracking_type === 'asset' &&
-      Array.isArray(removeAssetTags) &&
       removeAssetTags.length > 0
     ) {
       const assets = await ItemAsset.find({
@@ -168,19 +189,16 @@ exports.updateItem = async (req, res) => {
         });
       }
 
-      // deactivate assets
       await ItemAsset.updateMany(
         { _id: { $in: assets.map(a => a._id) } },
-        { $set: { status: 'removed' } }
+        { $set: { status: 'retired', condition: 'broken' } }
       );
 
-      item.initial_quantity -= assets.length;
+      item.total_quantity -= assets.length;
       item.available_quantity -= assets.length;
     }
 
-    /* ============================
-       REMOVE STOCK (BULK)
-    ============================ */
+    /* ================= REMOVE BULK STOCK ================= */
     if (addQty < 0 && item.tracking_type === 'bulk') {
       const removeQty = Math.abs(addQty);
 
@@ -190,87 +208,74 @@ exports.updateItem = async (req, res) => {
         });
       }
 
-      item.initial_quantity -= removeQty;
+      item.total_quantity -= removeQty;
       item.available_quantity -= removeQty;
     }
 
-    /* ============================
-       CLEAN REQUEST BODY
-    ============================ */
+    /* ================= CLEAN REQUEST ================= */
     delete req.body.add_quantity;
     delete req.body.remove_asset_tags;
     delete req.body.tracking_type;
     delete req.body.initial_quantity;
     delete req.body.available_quantity;
+    delete req.body.total_quantity;
+    delete req.body.last_asset_seq;
 
-    /* ============================
-       UPDATE METADATA
-    ============================ */
     Object.assign(item, req.body);
     await item.save();
 
     return res.json({
       success: true,
       data: item,
-      created_assets: createdAssets, // 👈 frontend dialog
+      created_assets: createdAssets, // 🔥 EXACTLY LIKE BEFORE
     });
+
   } catch (err) {
     console.error('UPDATE ITEM ERROR:', err);
-    return res.status(500).json({
-      error: 'Failed to update item',
-    });
+    return res.status(500).json({ error: err.message });
   }
 };
 
 
-
-
 /* ============================
-   GET ITEM ASSETS (FILTERABLE)
+   GET ITEM ASSETS
 ============================ */
 exports.getItemAssets = async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.query;
 
-    // Validate item
     const item = await Item.findById(id);
     if (!item) {
       return res.status(404).json({ error: 'Item not found' });
     }
 
-    // Only asset-tracked items
     if (item.tracking_type !== 'asset') {
       return res.status(400).json({
-        error: 'This item does not support asset tracking',
+        error: 'This item does not support asset tracking'
       });
     }
 
-    // Build query
     const filter = { item_id: item._id };
-    if (status) {
-      filter.status = status; // e.g. available, removed, damaged
-    }
+    if (status) filter.status = status;
 
     const assets = await ItemAsset.find(filter)
-      .select('asset_tag status -_id')
+      .select('asset_tag status condition')
       .sort({ asset_tag: 1 })
       .lean();
 
     return res.json({
       success: true,
-      data: assets,
+      data: assets
     });
+
   } catch (err) {
     console.error('GET ITEM ASSETS ERROR:', err);
     return res.status(500).json({
-      error: 'Failed to fetch item assets',
+      error: 'Failed to fetch item assets'
     });
   }
 };
-
-
-
 
 /* ============================
    SOFT DELETE ITEM
@@ -301,28 +306,23 @@ exports.removeItem = async (req, res) => {
 ============================ */
 exports.getAllItems = async (req, res) => {
   try {
-    const items = await Item.find({ is_active: true })
-      .sort({ name: 1 });
-
+    const items = await Item.find({ is_active: true }).sort({ name: 1 });
     res.json({ success: true, data: items });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-/* =========================
-   TRANSACTION MANAGEMENT
-========================= */
-
 /* ============================
-   FULL TRANSACTION HISTORY
+   TRANSACTION HISTORY
 ============================ */
 exports.getTransactionHistory = async (req, res) => {
   try {
     const transactions = await Transaction.find()
       .populate('student_id', 'name reg_no email')
-      .populate('items.item_id', 'name sku tracking_type') // ✅ FIX
-      .sort({ createdAt: -1 });
+      .populate('items.item_id', 'name sku tracking_type')
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.json({ success: true, data: transactions });
   } catch (err) {
@@ -330,7 +330,6 @@ exports.getTransactionHistory = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 
 /* ============================
    SEARCH TRANSACTIONS
@@ -340,7 +339,6 @@ exports.searchTransactions = async (req, res) => {
     const { transaction_id, reg_no, faculty_email, faculty_id } = req.query;
 
     const filter = {};
-
     if (transaction_id) filter.transaction_id = transaction_id;
     if (reg_no) filter.student_reg_no = reg_no;
     if (faculty_email) filter.faculty_email = faculty_email;
@@ -348,8 +346,9 @@ exports.searchTransactions = async (req, res) => {
 
     const transactions = await Transaction.find(filter)
       .populate('student_id', 'name reg_no email')
-      .populate('items.item_id', 'name sku tracking_type') // ✅ FIX
-      .sort({ createdAt: -1 });
+      .populate('items.item_id', 'name sku tracking_type')
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.json({ success: true, data: transactions });
   } catch (err) {
@@ -358,18 +357,16 @@ exports.searchTransactions = async (req, res) => {
   }
 };
 
-
-/* =========================
+/* ============================
    OVERDUE TRANSACTIONS
-========================= */
+============================ */
 exports.getOverdueTransactions = async (req, res) => {
   try {
-    const overdue = await Transaction.find({
-      status: 'overdue'
-    })
+    const overdue = await Transaction.find({ status: 'overdue' })
       .populate('student_id', 'name reg_no email')
-      .populate('items.item_id', 'name sku tracking_type') // ✅ FIX
-      .sort({ expected_return_date: 1 });
+      .populate('items.item_id', 'name sku tracking_type')
+      .sort({ expected_return_date: 1 })
+      .lean();
 
     res.json({ success: true, data: overdue });
   } catch (err) {
@@ -378,27 +375,22 @@ exports.getOverdueTransactions = async (req, res) => {
   }
 };
 
-
 /* ============================
-   GET SINGLE ITEM BY ID
+   GET SINGLE ITEM
 ============================ */
 exports.getItemById = async (req, res) => {
   try {
     const item = await Item.findOne({
       _id: req.params.id,
-      is_active: true,
+      is_active: true
     });
 
     if (!item) {
       return res.status(404).json({ error: 'Item not found' });
     }
 
-    res.json({
-      success: true,
-      data: item,
-    });
+    res.json({ success: true, data: item });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 };
-

@@ -1,6 +1,7 @@
 const Transaction = require('../models/Transaction');
 const Item = require('../models/Item');
 const ItemAsset = require('../models/ItemAsset');
+const DamagedAssetLog = require('../models/DamagedAssetLog'); // ✅ NEW
 
 /* ============================
    ISSUE ITEMS (APPROVED → ACTIVE)
@@ -8,75 +9,76 @@ const ItemAsset = require('../models/ItemAsset');
 exports.issueTransaction = async (req, res) => {
   try {
     const { transaction_id } = req.params;
-    const { items } = req.body; // 🔥 asset tags come here
+    const { items } = req.body;
 
+    // 1️⃣ Fetch approved transaction
     const transaction = await Transaction.findOne({
       transaction_id,
-      status: 'approved'
+      status: 'approved',
     });
 
     if (!transaction) {
       return res.status(404).json({
-        error: 'Transaction not found or not approved'
+        error: 'Transaction not found or not approved',
       });
     }
 
-    /* ============================
-       PROCESS EACH TRANSACTION ITEM
-    ============================ */
+    // 2️⃣ Process each transaction item
     for (const tItem of transaction.items) {
       const item = await Item.findById(tItem.item_id);
-
       if (!item) {
-        return res.status(400).json({ error: 'Invalid item in transaction' });
+        return res.status(400).json({
+          error: 'Invalid item in transaction',
+        });
       }
 
-      /* ========= BULK ITEM ========= */
+      /* ================= BULK ITEM ================= */
       if (item.tracking_type === 'bulk') {
         const usableQty =
-          item.available_quantity - item.reserved_quantity;
+          item.available_quantity - (item.reserved_quantity || 0);
 
         if (usableQty < tItem.quantity) {
           return res.status(400).json({
-            error: `Insufficient stock for ${item.name}`
+            error: `Insufficient stock for ${item.name}`,
           });
         }
 
+        // Update stock
         item.available_quantity -= tItem.quantity;
         tItem.issued_quantity = tItem.quantity;
 
         await item.save();
       }
 
-      /* ========= ASSET ITEM ========= */
+      /* ================= ASSET ITEM ================= */
       if (item.tracking_type === 'asset') {
-        // Find asset tags provided for this item
         const issuedAsset = items?.find(
-          i => String(i.item_id) === String(item._id)
+          (i) => String(i.item_id) === String(item._id)
         );
 
         if (!issuedAsset || !issuedAsset.asset_tags?.length) {
           return res.status(400).json({
-            error: `Asset tags required for ${item.name}`
+            error: `Asset tags required for ${item.name}`,
           });
         }
 
         if (issuedAsset.asset_tags.length !== tItem.quantity) {
           return res.status(400).json({
-            error: `Asset tag count mismatch for ${item.name}`
+            error: `Asset tag count mismatch for ${item.name}`,
           });
         }
 
+        // Issue each asset tag
         for (const tag of issuedAsset.asset_tags) {
           const asset = await ItemAsset.findOne({
             asset_tag: tag,
             item_id: item._id,
-            status: 'available'
+            status: 'available',
           });
 
           if (!asset) {
             return res.status(400).json({
-              error: `Asset ${tag} not available`
+              error: `Asset ${tag} not available`,
             });
           }
 
@@ -85,29 +87,41 @@ exports.issueTransaction = async (req, res) => {
           await asset.save();
         }
 
+        // 🔴 CRITICAL FIX — update item availability
+        item.available_quantity -= issuedAsset.asset_tags.length;
+        await item.save();
+
+        // Store issued info in transaction
         tItem.asset_tags = issuedAsset.asset_tags;
         tItem.issued_quantity = issuedAsset.asset_tags.length;
       }
     }
 
+    // 3️⃣ Finalize transaction
     transaction.status = 'active';
     transaction.issued_by_incharge_id = req.user.id;
     transaction.issued_at = new Date();
 
     await transaction.save();
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Items issued successfully',
-      transaction_id
+      transaction_id,
     });
 
   } catch (err) {
     console.error('Issue transaction error:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      error: 'Failed to issue transaction',
+    });
   }
 };
 
+
+/* ============================
+   RETURN TRANSACTION (ACTIVE → COMPLETED)
+============================ */
 exports.returnTransaction = async (req, res) => {
   try {
     const { returned_items } = req.body;
@@ -139,7 +153,7 @@ exports.returnTransaction = async (req, res) => {
         });
       }
 
-      /* ================= BULK ================= */
+      /* ========= BULK ========= */
       if (item.tracking_type === 'bulk') {
         const qty = Number(rItem.quantity);
 
@@ -147,9 +161,7 @@ exports.returnTransaction = async (req, res) => {
           return res.status(400).json({ error: 'Invalid quantity' });
         }
 
-        item.available_quantity = Number(item.available_quantity) || 0;
         item.available_quantity += qty;
-
         txnItem.returned_quantity += qty;
 
         if (rItem.damaged) {
@@ -160,7 +172,7 @@ exports.returnTransaction = async (req, res) => {
         await item.save();
       }
 
-      /* ================= ASSET ================= */
+      /* ========= ASSET ========= */
       if (item.tracking_type === 'asset') {
         if (!Array.isArray(rItem.asset_tags) || rItem.asset_tags.length === 0) {
           return res.status(400).json({
@@ -200,8 +212,21 @@ exports.returnTransaction = async (req, res) => {
           if (rItem.damaged) {
             asset.status = 'damaged';
             asset.condition = 'broken';
+
             item.damaged_quantity += 1;
             txnItem.damaged_quantity += 1;
+
+            // ✅ CREATE DAMAGE LOG (ADMIN VISIBILITY)
+            await DamagedAssetLog.create({
+              asset_id: asset._id,
+              transaction_id: transaction._id,
+              student_id: transaction.student_id,
+              faculty_id: transaction.faculty_id || null,
+              faculty_email: transaction.faculty_email || null,
+              damage_reason: rItem.damage_reason || 'Reported damaged during return',
+              remarks: rItem.remarks || ''
+            });
+
           } else {
             asset.status = 'available';
             txnItem.returned_quantity += 1;
@@ -231,36 +256,35 @@ exports.returnTransaction = async (req, res) => {
   }
 };
 
-
+/* ============================
+   GET ACTIVE TRANSACTIONS
+============================ */
 exports.getActiveTransactions = async (req, res) => {
   try {
-  const transactions = await Transaction.find({ status: 'active' })
-  .populate('student_id', 'name reg_no')
-  .populate('items.item_id', 'name tracking_type') // ✅ FIX
-  .sort({ createdAt: -1 });
+    const transactions = await Transaction.find({ status: 'active' })
+      .populate('student_id', 'name reg_no')
+      .populate('items.item_id', 'name tracking_type')
+      .sort({ createdAt: -1 });
 
-
-    res.json({
-      success: true,
-      data: transactions,
-    });
+    res.json({ success: true, data: transactions });
   } catch (err) {
     res.status(500).json({
-      error: 'Failed to load active transactions',
+      error: 'Failed to load active transactions'
     });
   }
 };
 
+/* ============================
+   GET PENDING TRANSACTIONS
+============================ */
 exports.getPendingTransactions = async (req, res) => {
-const transactions = await Transaction.find({ status: 'approved' })
-  .populate('student_id', 'name reg_no')
-  .populate('items.item_id', 'name tracking_type') // ✅ FIX
-  .sort({ createdAt: -1 });
-
+  const transactions = await Transaction.find({ status: 'approved' })
+    .populate('student_id', 'name reg_no')
+    .populate('items.item_id', 'name tracking_type')
+    .sort({ createdAt: -1 });
 
   res.json({ success: true, data: transactions });
 };
-
 
 /* ============================
    GET AVAILABLE ASSETS FOR ITEM
@@ -271,17 +295,17 @@ exports.getAvailableAssetsByItem = async (req, res) => {
 
     const assets = await ItemAsset.find({
       item_id: itemId,
-      status: 'available',
+      status: 'available'
     }).select('asset_tag status');
 
     res.json({
       success: true,
-      data: assets,
+      data: assets
     });
   } catch (err) {
     console.error('Get available assets error:', err);
     res.status(500).json({
-      error: 'Failed to load available assets',
+      error: 'Failed to load available assets'
     });
   }
 };

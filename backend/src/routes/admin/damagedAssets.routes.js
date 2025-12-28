@@ -50,22 +50,37 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const record = await DamagedAssetLog.findById(req.params.id)
+      // Asset → Item
       .populate({
         path: 'asset_id',
         populate: {
-          path: 'item_id'
+          path: 'item_id',
+          select: 'name category sku'
         }
       })
-      .populate('student_id')
-      .populate('faculty_id')
+
+      // Transaction → Student
       .populate({
         path: 'transaction_id',
+        select: 'transaction_id faculty_email faculty_id issued_at returned_at status items',
         populate: [
-          { path: 'items.item_id' },
-          { path: 'student_id' },
-          { path: 'faculty_id' }
+          {
+            path: 'student_id',
+            select: 'name reg_no email'
+          },
+          {
+            path: 'items.item_id',
+            select: 'name'
+          }
         ]
       })
+
+      // Student (redundant safety if you stored it separately)
+      .populate({
+        path: 'student_id',
+        select: 'name reg_no email'
+      })
+
       .lean();
 
     if (!record) {
@@ -89,6 +104,7 @@ router.get('/:id', async (req, res) => {
 });
 
 
+
 /**
  * PATCH /api/v1/admin/damaged-assets/:id/status
  * Admin: Update asset status (repair / resolve / retire)
@@ -96,7 +112,6 @@ router.get('/:id', async (req, res) => {
 router.patch('/:id/status', async (req, res) => {
   try {
     const { action } = req.body;
-    // action: 'repair' | 'resolve' | 'retire'
 
     if (!['repair', 'resolve', 'retire'].includes(action)) {
       return res.status(400).json({
@@ -113,7 +128,10 @@ router.patch('/:id/status', async (req, res) => {
       });
     }
 
-    const asset = await require('../../models/ItemAsset').findById(record.asset_id);
+    const ItemAsset = require('../../models/ItemAsset');
+    const Item = require('../../models/Item');
+
+    const asset = await ItemAsset.findById(record.asset_id);
     if (!asset) {
       return res.status(404).json({
         success: false,
@@ -121,24 +139,42 @@ router.patch('/:id/status', async (req, res) => {
       });
     }
 
-    // 🔁 State transitions
+    const item = await Item.findById(asset.item_id);
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: 'Parent item not found'
+      });
+    }
+
     switch (action) {
       case 'repair':
+        // Still damaged, just moved to repair workflow
         asset.status = 'damaged';
         asset.condition = 'faulty';
         record.status = 'under_repair';
         break;
 
       case 'resolve':
+        // ✅ FIXED ASSET RETURNS TO INVENTORY
         asset.status = 'available';
         asset.condition = 'good';
         record.status = 'resolved';
+
+        item.available_quantity += 1;
+        item.damaged_quantity = Math.max(0, item.damaged_quantity - 1);
+        await item.save();
         break;
 
       case 'retire':
+        // ❌ ASSET REMOVED FOREVER
         asset.status = 'retired';
         asset.condition = 'broken';
         record.status = 'retired';
+
+        item.damaged_quantity = Math.max(0, item.damaged_quantity - 1);
+        item.total_quantity = Math.max(0, item.total_quantity - 1);
+        await item.save();
         break;
     }
 
@@ -149,6 +185,7 @@ router.patch('/:id/status', async (req, res) => {
       success: true,
       message: `Asset status updated via action: ${action}`
     });
+
   } catch (error) {
     console.error('Error updating damaged asset status:', error);
     res.status(500).json({
@@ -157,7 +194,6 @@ router.patch('/:id/status', async (req, res) => {
     });
   }
 });
-
 
 
 /**

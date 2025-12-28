@@ -118,7 +118,6 @@ exports.issueTransaction = async (req, res) => {
   }
 };
 
-
 /* ============================
    RETURN TRANSACTION (ACTIVE → COMPLETED)
 ============================ */
@@ -141,10 +140,12 @@ exports.returnTransaction = async (req, res) => {
 
     for (const rItem of returned_items) {
       const item = await Item.findById(rItem.item_id);
-      if (!item) return res.status(400).json({ error: 'Invalid item' });
+      if (!item) {
+        return res.status(400).json({ error: 'Invalid item' });
+      }
 
       const txnItem = transaction.items.find(
-        t => t.item_id.toString() === item._id.toString()
+        t => String(t.item_id) === String(item._id)
       );
 
       if (!txnItem) {
@@ -153,7 +154,9 @@ exports.returnTransaction = async (req, res) => {
         });
       }
 
-      /* ========= BULK ========= */
+      /* =====================================================
+         BULK ITEM RETURN (QUANTITY-BASED)
+      ===================================================== */
       if (item.tracking_type === 'bulk') {
         const qty = Number(rItem.quantity);
 
@@ -164,7 +167,7 @@ exports.returnTransaction = async (req, res) => {
         item.available_quantity += qty;
         txnItem.returned_quantity += qty;
 
-        if (rItem.damaged) {
+        if (rItem.damaged === true) {
           item.damaged_quantity += qty;
           txnItem.damaged_quantity += qty;
         }
@@ -172,7 +175,9 @@ exports.returnTransaction = async (req, res) => {
         await item.save();
       }
 
-      /* ========= ASSET ========= */
+      /* =====================================================
+         ASSET ITEM RETURN (TAG-BASED, PARTIAL DAMAGE SUPPORTED)
+      ===================================================== */
       if (item.tracking_type === 'asset') {
         if (!Array.isArray(rItem.asset_tags) || rItem.asset_tags.length === 0) {
           return res.status(400).json({
@@ -180,21 +185,27 @@ exports.returnTransaction = async (req, res) => {
           });
         }
 
-        for (const rawTag of rItem.asset_tags) {
-          const tag = rawTag.trim().toUpperCase();
+        const returnedTags = rItem.asset_tags.map(t =>
+          t.trim().toUpperCase()
+        );
 
+        const damagedTags = Array.isArray(rItem.damaged_asset_tags)
+          ? rItem.damaged_asset_tags.map(t => t.trim().toUpperCase())
+          : [];
+
+        // 🔒 Ensure damaged tags ⊆ returned tags
+        for (const tag of damagedTags) {
+          if (!returnedTags.includes(tag)) {
+            return res.status(400).json({
+              error: `Damaged asset ${tag} was not returned`
+            });
+          }
+        }
+
+        for (const tag of returnedTags) {
           if (!txnItem.asset_tags.includes(tag)) {
             return res.status(400).json({
               error: `Asset ${tag} not issued in this transaction`
-            });
-          }
-
-          if (
-            txnItem.returned_quantity + txnItem.damaged_quantity >=
-            txnItem.issued_quantity
-          ) {
-            return res.status(400).json({
-              error: `Asset ${tag} already returned or damaged`
             });
           }
 
@@ -209,26 +220,31 @@ exports.returnTransaction = async (req, res) => {
             });
           }
 
-          if (rItem.damaged) {
+          /* ---------- DAMAGED ASSET ---------- */
+          if (damagedTags.includes(tag)) {
             asset.status = 'damaged';
             asset.condition = 'broken';
 
             item.damaged_quantity += 1;
             txnItem.damaged_quantity += 1;
 
-            // ✅ CREATE DAMAGE LOG (ADMIN VISIBILITY)
             await DamagedAssetLog.create({
               asset_id: asset._id,
               transaction_id: transaction._id,
               student_id: transaction.student_id,
               faculty_id: transaction.faculty_id || null,
               faculty_email: transaction.faculty_email || null,
-              damage_reason: rItem.damage_reason || 'Reported damaged during return',
+              damage_reason:
+                rItem.damage_reason || 'Reported damaged during return',
               remarks: rItem.remarks || ''
             });
-
-          } else {
+          }
+          /* ---------- NORMAL RETURN ---------- */
+          else {
             asset.status = 'available';
+            asset.condition = 'good';
+
+            item.available_quantity += 1;
             txnItem.returned_quantity += 1;
           }
 
@@ -240,11 +256,14 @@ exports.returnTransaction = async (req, res) => {
       }
     }
 
+    /* =====================================================
+       FINALIZE TRANSACTION
+    ===================================================== */
     transaction.status = 'completed';
     transaction.actual_return_date = new Date();
     await transaction.save();
 
-    res.json({
+    return res.json({
       success: true,
       message: 'Transaction completed successfully',
       transaction_id: transaction.transaction_id
@@ -252,9 +271,10 @@ exports.returnTransaction = async (req, res) => {
 
   } catch (err) {
     console.error('Return transaction error:', err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
+
 
 /* ============================
    GET ACTIVE TRANSACTIONS

@@ -218,52 +218,77 @@ exports.verifyStudentEmail = async (req, res) => {
 
 
 exports.studentForgotPassword = async (req, res) => {
-  const { email } = req.body;
+  try {
+    const { email } = req.body;
 
-  const student = await Student.findOne({ email });
-  if (!student) {
-    return res.status(404).json({ error: 'Student not found' });
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const student = await Student.findOne({ email });
+    if (!student) {
+      // security: don't reveal existence
+      return res.json({ success: true });
+    }
+
+    const otp = crypto.randomInt(100000, 999999).toString();
+
+    student.reset_otp = otp;
+    student.reset_otp_expiry = Date.now() + 15 * 60 * 1000; // 15 min
+    await student.save();
+
+    const resetLink =
+      `${process.env.FRONTEND_URL}/student/reset-password?token=${otp}`;
+
+    await sendMail({
+      to: student.email,
+      subject: 'Student Password Reset',
+      html: `
+        <p>You requested a password reset.</p>
+        <p>click the link below:</p>
+        <a href="${resetLink}">Reset Password</a>
+        <p>This OTP expires in 15 minutes.</p>
+      `
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Student forgot password error:', err);
+    res.status(500).json({ message: 'Failed to send reset email' });
   }
-
-  const otp = crypto.randomInt(100000, 999999).toString();
-
-  student.reset_otp = crypto.createHash('sha256').update(otp).digest('hex');
-  student.reset_otp_expiry = Date.now() + 10 * 60 * 1000;
-
-  await student.save();
-
-  await sendMail({
-    to: email,
-    subject: 'Student Password Reset OTP',
-    html: `<p>Your OTP is <b>${otp}</b>. Valid for 10 minutes.</p>`
-  });
-
-  res.json({ message: 'OTP sent to email' });
 };
 
 
 exports.studentResetPassword = async (req, res) => {
-  const { email, otp, new_password } = req.body;
+  try {
+    const { token, password } = req.body;
 
-  const hashedOtp = crypto.createHash('sha256').update(otp).digest('hex');
+    if (!token || !password) {
+      return res.status(400).json({ message: 'Invalid request' });
+    }
 
-  const student = await Student.findOne({
-    email,
-    reset_otp: hashedOtp,
-    reset_otp_expiry: { $gt: Date.now() }
-  }).select('+reset_otp');
+    const student = await Student.findOne({
+      reset_otp: token,
+      reset_otp_expiry: { $gt: Date.now() }
+    }).select('+reset_otp +reset_otp_expiry');
 
-  if (!student) {
-    return res.status(400).json({ error: 'Invalid or expired OTP' });
+    if (!student) {
+      return res.status(400).json({
+        message: 'Invalid or expired reset link'
+      });
+    }
+
+    student.password = await bcrypt.hash(password, 10);
+    student.reset_otp = null;
+    student.reset_otp_expiry = null;
+
+    await student.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Student reset password error:', err);
+    res.status(500).json({ message: 'Failed to reset password' });
   }
-
-  student.password = await bcrypt.hash(new_password, 10);
-  student.reset_otp = undefined;
-  student.reset_otp_expiry = undefined;
-
-  await student.save();
-
-  res.json({ message: 'Password reset successful' });
 };
 
 

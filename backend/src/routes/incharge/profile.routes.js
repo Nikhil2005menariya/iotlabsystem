@@ -7,7 +7,7 @@ const {
   changeInchargePassword,
   requestInchargeEmailOTP,
   updateInchargeEmail,
-} = require('../../controllers/incharge.controller');
+} = require('../../controllers/auth.controller');
 
 // 🔒 incharge only
 router.use(auth, role('incharge'));

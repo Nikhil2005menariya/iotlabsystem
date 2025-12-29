@@ -5,7 +5,7 @@ const {
   changeAdminPassword,
   requestAdminEmailOTP,
   updateAdminEmail
-} = require('../../controllers/admin.controller');
+} = require('../../controllers/auth.controller');
 
 router.post('/change-password', changeAdminPassword);
 router.post('/request-email-otp', requestAdminEmailOTP);

@@ -2,6 +2,10 @@ const Transaction = require('../models/Transaction');
 const Item = require('../models/Item');
 const ItemAsset = require('../models/ItemAsset');
 const DamagedAssetLog = require('../models/DamagedAssetLog'); // ✅ NEW
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const Staff = require('../models/Staff');
+const { sendMail } = require('../services/mail.service');
 
 /* ============================
    ISSUE ITEMS (APPROVED → ACTIVE)
@@ -327,5 +331,119 @@ exports.getAvailableAssetsByItem = async (req, res) => {
     res.status(500).json({
       error: 'Failed to load available assets'
     });
+  }
+};
+
+
+exports.changeInchargePassword = async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+
+    if (!current_password || !new_password) {
+      return res.status(400).json({ message: 'Missing fields' });
+    }
+
+    const incharge = await Staff.findById(req.user.id)
+    .select('+email_otp +email_otp_expiry +pending_email');
+
+    if (!incharge || incharge.role !== 'incharge') {
+      return res.status(404).json({ message: 'Incharge not found' });
+    }
+
+    const isMatch = await bcrypt.compare(current_password, incharge.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Current password is incorrect' });
+    }
+
+    incharge.password = await bcrypt.hash(new_password, 10);
+    await incharge.save();
+
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (err) {
+    console.error('Incharge change password error:', err);
+    res.status(500).json({ message: 'Failed to change password' });
+  }
+};
+
+
+exports.requestInchargeEmailOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const incharge = await Staff.findById(req.user.id)
+    .select('+email_otp +email_otp_expiry +pending_email');
+
+    if (!incharge || incharge.role !== 'incharge') {
+      return res.status(404).json({ message: 'Incharge not found' });
+    }
+
+    const emailExists = await Staff.findOne({ email });
+    if (emailExists) {
+      return res.status(400).json({ message: 'Email already in use' });
+    }
+
+    const otp = crypto.randomInt(100000, 999999).toString();
+
+    incharge.pending_email = email;
+    incharge.email_otp = otp;
+    incharge.email_otp_expiry = Date.now() + 10 * 60 * 1000;
+    await incharge.save();
+
+    await sendMail({
+      to: email,
+      subject: 'Email Change Verification',
+      html: `
+        <p>Your OTP is:</p>
+        <h2>${otp}</h2>
+        <p>Valid for 10 minutes.</p>
+      `,
+    });
+
+    res.json({ success: true, message: 'OTP sent successfully' });
+  } catch (err) {
+    console.error('Incharge request OTP error:', err);
+    res.status(500).json({ message: 'Failed to send OTP' });
+  }
+};
+
+
+exports.updateInchargeEmail = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ message: 'Missing fields' });
+    }
+
+    const incharge = await Staff.findById(req.user.id)
+    .select('+email_otp +email_otp_expiry +pending_email');
+
+    if (!incharge || incharge.role !== 'incharge') {
+      return res.status(404).json({ message: 'Incharge not found' });
+    }
+
+    if (
+      incharge.pending_email !== email ||
+      incharge.email_otp !== otp ||
+      Date.now() > incharge.email_otp_expiry
+    ) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
+
+    incharge.email = email;
+    incharge.pending_email = null;
+    incharge.email_otp = null;
+    incharge.email_otp_expiry = null;
+
+    await incharge.save();
+
+    res.json({ success: true, message: 'Email updated successfully' });
+  } catch (err) {
+    console.error('Incharge update email error:', err);
+    res.status(500).json({ message: 'Failed to update email' });
   }
 };

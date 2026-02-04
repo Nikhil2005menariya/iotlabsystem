@@ -4,11 +4,43 @@ const Item = require('../models/Item');
 const Student = require('../models/Student');
 const { sendMail } = require('../services/mail.service');
 
+
+
+// GET AVAILABLE ITEMS FOR STUDENT
+exports.getAvailableItemsForStudent = async (req, res) => {
+  try {
+    const items = await Item.find(
+      { is_active: true },
+      {
+        name: 1,
+        sku: 1,
+        category: 1,
+        description: 1,
+        tracking_type: 1,
+        available_quantity: 1,
+        total_quantity: 1,          // ✅ REQUIRED
+        min_threshold_quantity: 1   // ✅ REQUIRED (low-stock UI)
+      }
+    ).sort({ name: 1 });
+
+    res.json({
+      success: true,
+      data: items
+    });
+  } catch (err) {
+    console.error('STUDENT ITEMS ERROR:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load available items'
+    });
+  }
+};
+
+
 /* ============================
    RAISE TRANSACTION (FINAL)
 ============================ */
 exports.raiseTransaction = async (req, res) => {
-
   try {
     const {
       items,
@@ -22,12 +54,47 @@ exports.raiseTransaction = async (req, res) => {
     }
 
     /* ============================
-       FETCH STUDENT (SOURCE OF TRUTH)
+       FETCH STUDENT
     ============================ */
     const student = await Student.findById(req.user.id);
 
     if (!student) {
       return res.status(404).json({ error: 'Student not found' });
+    }
+
+    /* ============================
+       BLOCK MULTIPLE TRANSACTIONS
+       WITH CLEAR STATUS MESSAGE
+    ============================ */
+    const existingTxn = await Transaction.findOne({
+      student_id: student._id,
+      status: { $in: ['raised', 'approved', 'active', 'overdue'] }
+    }).lean();
+
+    if (existingTxn) {
+      let message = 'You already have an ongoing transaction';
+
+      if (existingTxn.status === 'raised') {
+        message =
+          'You already have a transaction pending faculty approval. Please wait for approval.';
+      }
+
+      if (existingTxn.status === 'approved') {
+        message =
+          'Your previous request is approved but not yet issued. Please contact the lab in-charge.';
+      }
+
+      if (existingTxn.status === 'active') {
+        message =
+          'You already have an active transaction. Please return the issued items before raising a new request.';
+      }
+
+      if (existingTxn.status === 'overdue') {
+        message =
+          'You have an overdue transaction. Please return the issued items immediately.';
+      }
+
+      return res.status(400).json({ error: message });
     }
 
     /* ============================
@@ -42,7 +109,7 @@ exports.raiseTransaction = async (req, res) => {
         });
       }
 
-      /* ===== BULK ITEM ===== */
+      /* ===== BULK ===== */
       if (item.tracking_type === 'bulk') {
         if (!reqItem.quantity || reqItem.quantity <= 0) {
           return res.status(400).json({
@@ -60,15 +127,13 @@ exports.raiseTransaction = async (req, res) => {
         }
       }
 
-      /* ===== ASSET ITEM ===== */
+      /* ===== ASSET ===== */
       if (item.tracking_type === 'asset') {
         if (!reqItem.quantity || reqItem.quantity <= 0) {
           return res.status(400).json({
             error: `Quantity required for asset item ${item.name}`
           });
         }
-
-        // Availability is checked later by in-charge via asset tags
       }
     }
 
@@ -82,13 +147,12 @@ exports.raiseTransaction = async (req, res) => {
       crypto.randomBytes(32).toString('hex');
 
     /* ============================
-       NORMALIZE TRANSACTION ITEMS
-       (NO ASSET TAGS HERE)
+       NORMALIZE ITEMS
     ============================ */
     const normalizedItems = items.map(i => ({
       item_id: i.item_id,
       quantity: i.quantity,
-      asset_tags: []   // 🔐 asset tags added ONLY by in-charge
+      asset_tags: []
     }));
 
     /* ============================
@@ -110,7 +174,7 @@ exports.raiseTransaction = async (req, res) => {
     });
 
     /* ============================
-       SEND FACULTY APPROVAL EMAIL
+       SEND FACULTY EMAIL
     ============================ */
     const approvalLink =
       `${process.env.FRONTEND_URL}/faculty/approve?token=${approvalToken}`;
@@ -139,6 +203,7 @@ exports.raiseTransaction = async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 };
+
 
 
 /* ============================

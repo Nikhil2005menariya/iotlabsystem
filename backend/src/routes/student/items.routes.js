@@ -6,7 +6,7 @@ const role = require('../../middlewares/role.middleware');
 
 const {
   getAvailableItemsForStudent
-} = require('../../controllers/student.items.controller');
+} = require('../../controllers/student.controller');
 
 // student only
 router.use(auth, role('student'));

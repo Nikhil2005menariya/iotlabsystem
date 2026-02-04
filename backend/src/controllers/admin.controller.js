@@ -400,3 +400,100 @@ exports.getItemById = async (req, res) => {
   }
 };
 
+
+
+/* ======================================
+   ADMIN — GET ALL LAB SESSIONS
+====================================== */
+exports.getLabSessions = async (req, res) => {
+  try {
+    const records = await Transaction.find({
+      student_reg_no: 'LAB-SESSION'
+    })
+      .populate('issued_by_incharge_id', 'name email')
+      .populate('items.item_id', 'name sku tracking_type')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      count: records.length,
+      data: records
+    });
+  } catch (err) {
+    console.error('Admin get lab sessions error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch lab sessions' });
+  }
+};
+
+/* ======================================
+   ADMIN — GET SINGLE LAB SESSION
+====================================== */
+exports.getLabSessionDetail = async (req, res) => {
+  try {
+    const record = await Transaction.findOne({
+      _id: req.params.id,
+      student_reg_no: 'LAB-SESSION'
+    })
+      .populate('items.item_id')
+      .populate('issued_by_incharge_id', 'name email')
+      .lean();
+
+    if (!record) {
+      return res.status(404).json({ message: 'Lab session not found' });
+    }
+
+    res.json({ success: true, data: record });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch lab session' });
+  }
+};
+
+/* ======================================
+   ADMIN — GET ALL LAB TRANSFERS
+====================================== */
+exports.getLabTransfers = async (req, res) => {
+  try {
+    const records = await Transaction.find({
+      student_reg_no: 'LAB-TRANSFER'
+    })
+      .populate('issued_by_incharge_id', 'name email')
+      .populate('items.item_id', 'name sku tracking_type')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      count: records.length,
+      data: records
+    });
+  } catch (err) {
+    console.error('Admin get lab transfers error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch lab transfers' });
+  }
+};
+
+/* ======================================
+   ADMIN — GET SINGLE LAB TRANSFER
+====================================== */
+exports.getLabTransferDetail = async (req, res) => {
+  try {
+    const record = await Transaction.findOne({
+      _id: req.params.id,
+      student_reg_no: 'LAB-TRANSFER'
+    })
+      .populate('items.item_id')
+      .populate('issued_by_incharge_id', 'name email')
+      .lean();
+
+    if (!record) {
+      return res.status(404).json({ message: 'Lab transfer not found' });
+    }
+
+    res.json({ success: true, data: record });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch lab transfer' });
+  }
+};
+
+

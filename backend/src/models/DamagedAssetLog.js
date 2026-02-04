@@ -16,7 +16,8 @@ const damagedAssetLogSchema = new mongoose.Schema({
   student_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Student',
-    required: true
+    required: false,
+    default:null,
   },
 
     faculty_id: {

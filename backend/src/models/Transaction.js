@@ -1,5 +1,8 @@
 const mongoose = require('mongoose');
 
+/* ============================
+   TRANSACTION ITEM (UNCHANGED)
+============================ */
 const transactionItemSchema = new mongoose.Schema(
   {
     item_id: {
@@ -20,12 +23,12 @@ const transactionItemSchema = new mongoose.Schema(
        ASSET TRACKING
     ===================== */
     asset_tags: {
-      type: [String],   // e.g. ["UNO-0001", "UNO-0002"]
+      type: [String], // ["ARD-UNO-0001"]
       default: []
     },
 
     /* =====================
-       SYSTEM MANAGED
+       SYSTEM MANAGED COUNTS
     ===================== */
     issued_quantity: {
       type: Number,
@@ -45,8 +48,14 @@ const transactionItemSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/* ============================
+   TRANSACTION SCHEMA (FINAL)
+============================ */
 const transactionSchema = new mongoose.Schema(
   {
+    /* =====================
+       IDENTIFIER
+    ===================== */
     transaction_id: {
       type: String,
       required: true,
@@ -54,6 +63,60 @@ const transactionSchema = new mongoose.Schema(
       index: true
     },
 
+    /* =====================
+       TRANSACTION TYPE
+    ===================== */
+    transaction_type: {
+      type: String,
+      enum: ['regular', 'lab_session', 'lab_transfer'],
+      default: 'regular',
+      index: true
+    },
+
+    /* =====================
+       LAB TRANSFER ONLY
+    ===================== */
+    transfer_type: {
+      type: String,
+      enum: ['temporary', 'permanent'],
+      default: null
+    },
+
+    target_lab_name: {
+      type: String,
+      default: null
+    },
+
+    handover_faculty_name: {
+      type: String,
+      default: null
+    },
+
+    handover_faculty_email: {
+      type: String,
+      default: null
+    },
+
+    handover_faculty_id: {
+      type: String,
+      default: null
+    },
+
+    /* =====================
+       LAB SESSION ONLY
+    ===================== */
+    issued_directly: {
+      type: Boolean,
+      default: false
+    },
+
+    lab_slot: {
+      type: String // e.g. "CSL-3 | 10:00–12:00"
+    },
+
+    /* =====================
+       STATUS
+    ===================== */
     status: {
       type: String,
       enum: [
@@ -70,11 +133,12 @@ const transactionSchema = new mongoose.Schema(
 
     /* =====================
        STUDENT INFO
+       (NULL for lab session / transfer)
     ===================== */
     student_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Student',
-      required: true,
+      default: null,
       index: true
     },
 
@@ -89,10 +153,13 @@ const transactionSchema = new mongoose.Schema(
     ===================== */
     faculty_email: {
       type: String,
-      required: true
+      default: null
     },
 
-    faculty_id: String,
+    faculty_id: {
+      type: String,
+      default: null
+    },
 
     /* =====================
        TRANSACTION ITEMS
@@ -101,6 +168,7 @@ const transactionSchema = new mongoose.Schema(
 
     /* =====================
        FACULTY APPROVAL
+       (REGULAR ONLY)
     ===================== */
     faculty_approval: {
       approved: {
@@ -126,7 +194,11 @@ const transactionSchema = new mongoose.Schema(
     ===================== */
     expected_return_date: {
       type: Date,
-      required: true,
+      required: function () {
+        // required for regular + lab_session + temporary lab_transfer
+        return this.transaction_type !== 'lab_transfer' ||
+               this.transfer_type === 'temporary';
+      },
       index: true
     },
 

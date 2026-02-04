@@ -355,35 +355,45 @@ exports.issueLabSession = async (req, res) => {
     const {
       student_reg_no,
       student_email,
+      faculty_name,      // optional (for UI)
+      faculty_email,
+      faculty_id,
       lab_slot,
       items
     } = req.body;
 
     if (
+      !faculty_email ||
+      !faculty_id ||
       !lab_slot ||
       !Array.isArray(items) ||
       items.length === 0
     ) {
-      return res.status(400).json({ message: 'Missing required fields' });
+      return res.status(400).json({
+        message: 'Missing required fields'
+      });
     }
 
     const issuedAt = new Date();
 
-    // ✅ expected return = +2 hours
+    // ✅ expected return = +2 hours (same day)
     const expectedReturnDate = new Date(
       issuedAt.getTime() + 2 * 60 * 60 * 1000
     );
 
-    /* ===== CREATE TRANSACTION ===== */
+    /* ================= CREATE TRANSACTION ================= */
     const transaction = await Transaction.create({
       transaction_id: `LAB-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      transaction_type: 'lab_session',
+      issued_directly: true,
       status: 'active',
 
-      student_id: null,              // lab session → optional
+      // student optional in lab session
+      student_id: null,
       student_reg_no: student_reg_no || 'LAB-SESSION',
 
-      faculty_email: 'lab-session',
-      faculty_id: 'LAB',
+      faculty_email,
+      faculty_id,
 
       lab_slot,
       items: [],
@@ -393,16 +403,24 @@ exports.issueLabSession = async (req, res) => {
       expected_return_date: expectedReturnDate
     });
 
-    /* ===== PROCESS ITEMS ===== */
+    /* ================= PROCESS ITEMS ================= */
     for (const it of items) {
       const item = await Item.findById(it.item_id);
 
       if (!item || !item.is_active) {
-        return res.status(400).json({ message: 'Invalid item selected' });
+        return res.status(400).json({
+          message: 'Invalid item selected'
+        });
       }
 
-      /* ===== BULK ===== */
+      /* ===== BULK ITEM ===== */
       if (item.tracking_type === 'bulk') {
+        if (!it.quantity || it.quantity <= 0) {
+          return res.status(400).json({
+            message: `Invalid quantity for ${item.name}`
+          });
+        }
+
         if (item.available_quantity < it.quantity) {
           return res.status(400).json({
             message: `Insufficient stock for ${item.name}`
@@ -419,8 +437,14 @@ exports.issueLabSession = async (req, res) => {
         });
       }
 
-      /* ===== ASSET ===== */
+      /* ===== ASSET ITEM ===== */
       if (item.tracking_type === 'asset') {
+        if (!it.quantity || it.quantity <= 0) {
+          return res.status(400).json({
+            message: `Quantity required for ${item.name}`
+          });
+        }
+
         const assets = await ItemAsset.find({
           item_id: item._id,
           status: 'available'
@@ -451,7 +475,7 @@ exports.issueLabSession = async (req, res) => {
 
     await transaction.save();
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Lab session items issued successfully',
       transaction_id: transaction.transaction_id,
@@ -461,7 +485,9 @@ exports.issueLabSession = async (req, res) => {
 
   } catch (err) {
     console.error('Lab session issue error:', err);
-    res.status(500).json({ message: 'Failed to issue lab session items' });
+    return res.status(500).json({
+      message: 'Failed to issue lab session items'
+    });
   }
 };
 
@@ -538,8 +564,8 @@ exports.getActiveLabSessions = async (req, res) => {
   try {
     const transactions = await Transaction.find({
       status: 'active',
-      issued_by_incharge_id: req.user.id,
-      faculty_email: 'lab-session'
+      transaction_type: 'lab_session',
+      issued_by_incharge_id: req.user.id
     })
       .populate('student_id', 'name reg_no email')
       .populate('items.item_id', 'name sku tracking_type')
@@ -548,6 +574,7 @@ exports.getActiveLabSessions = async (req, res) => {
 
     res.json({
       success: true,
+      count: transactions.length,
       data: transactions
     });
   } catch (err) {
@@ -557,6 +584,7 @@ exports.getActiveLabSessions = async (req, res) => {
     });
   }
 };
+
 
 // LAB TRANSFER CONTROLLERS
 

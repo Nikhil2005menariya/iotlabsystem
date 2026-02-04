@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const Staff = require('../models/Staff');
 const { sendMail } = require('../services/mail.service');
+const ComponentRequest=require('../models/ComponentRequest')
 
 
 /* =========================
@@ -493,6 +494,119 @@ exports.getLabTransferDetail = async (req, res) => {
     res.json({ success: true, data: record });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch lab transfer' });
+  }
+};
+
+
+
+//feed back requests
+/* ============================
+   GET ALL COMPONENT REQUESTS
+   (with filters)
+============================ */
+exports.getAllComponentRequests = async (req, res) => {
+  try {
+    const {
+      status,
+      urgency,
+      category,
+      student_reg_no,
+      component_name
+    } = req.query;
+
+    const filter = {};
+
+    if (status) filter.status = status;
+    if (urgency) filter.urgency = urgency;
+    if (category) filter.category = category;
+    if (student_reg_no) filter.student_reg_no = student_reg_no;
+    if (component_name)
+      filter.component_name = new RegExp(component_name, 'i');
+
+    const requests = await ComponentRequest.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      count: requests.length,
+      data: requests
+    });
+  } catch (err) {
+    console.error('Admin get component requests error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch component requests'
+    });
+  }
+};
+
+/* ============================
+   GET SINGLE COMPONENT REQUEST
+============================ */
+exports.getComponentRequestById = async (req, res) => {
+  try {
+    const request = await ComponentRequest.findById(req.params.id).lean();
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Component request not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: request
+    });
+  } catch (err) {
+    console.error('Admin get component request error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch component request'
+    });
+  }
+};
+
+/* ============================
+   UPDATE REQUEST STATUS
+   (approve / reject)
+============================ */
+exports.updateComponentRequestStatus = async (req, res) => {
+  try {
+    const { status, admin_remarks } = req.body;
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status'
+      });
+    }
+
+    const request = await ComponentRequest.findById(req.params.id);
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: 'Component request not found'
+      });
+    }
+
+    request.status = status;
+    request.admin_remarks = admin_remarks || null;
+
+    await request.save();
+
+    res.json({
+      success: true,
+      message: `Request ${status} successfully`
+    });
+  } catch (err) {
+    console.error('Admin update component request error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update request'
+    });
   }
 };
 

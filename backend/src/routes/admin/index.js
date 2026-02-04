@@ -13,7 +13,7 @@ const overdueRoutes = require('./overdue.routes');
 const damagedAssetsRoutes = require('./damagedAssets.routes');
 const profileRoutes = require('./profile.routes');
 const labTransactionRoutes = require('./labTransactions.routes');
-
+const componentrequest=require('./componentRequest.routes');
 
 
 router.use('/analysis', require('../../analysis/analysis.routes'));
@@ -23,6 +23,6 @@ router.use('/overdue', overdueRoutes);
 router.use('/damaged-assets', damagedAssetsRoutes);
 router.use('/profile', profileRoutes);
 router.use('/lab-transactions', labTransactionRoutes);
-
+router.use('/component-requests', componentrequest);
 
 module.exports = router;

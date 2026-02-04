@@ -3,6 +3,7 @@ const Transaction = require('../models/Transaction');
 const Item = require('../models/Item');
 const Student = require('../models/Student');
 const { sendMail } = require('../services/mail.service');
+const ComponentRequest = require("../models/ComponentRequest");
 
 
 
@@ -240,5 +241,99 @@ exports.getTransactionById = async (req, res) => {
     res.json({ success: true, data: transaction });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+};
+
+
+//component request 
+
+
+/* ============================
+   STUDENT: REQUEST COMPONENT
+============================ */
+/* ============================
+   CREATE COMPONENT REQUEST
+============================ */
+exports.requestComponent = async (req, res) => {
+  try {
+    const {
+      component_name,
+      category,
+      quantity_requested,
+      use_case,
+      urgency
+    } = req.body;
+
+    if (!component_name || !quantity_requested || !use_case) {
+      return res.status(400).json({
+        message: 'Missing required fields'
+      });
+    }
+
+    /* ============================
+       FETCH STUDENT (FROM TOKEN)
+    ============================ */
+    const student = await Student.findById(req.user.id);
+
+    if (!student || !student.is_active) {
+      return res.status(404).json({
+        message: 'Student not found'
+      });
+    }
+
+    /* ============================
+       CREATE REQUEST
+    ============================ */
+    const request = await ComponentRequest.create({
+      component_name,
+      category,
+      quantity_requested,
+      use_case,
+      urgency: urgency || 'medium',
+
+      // 🔥 REQUIRED FIELDS — FIX
+      student_id: student._id,
+      student_reg_no: student.reg_no,
+      student_email: student.email,
+
+      status: 'pending'
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Component request submitted successfully',
+      data: request
+    });
+
+  } catch (err) {
+    console.error('Component request error:', err);
+    return res.status(500).json({
+      message: 'Failed to submit component request'
+    });
+  }
+};
+
+
+/* ============================
+   GET STUDENT REQUESTS
+============================ */
+exports.getMyComponentRequests = async (req, res) => {
+  try {
+    const requests = await ComponentRequest.find({
+      student_id: req.user.id
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      count: requests.length,
+      data: requests
+    });
+  } catch (err) {
+    console.error('Fetch student requests error:', err);
+    res.status(500).json({
+      message: 'Failed to fetch requests'
+    });
   }
 };

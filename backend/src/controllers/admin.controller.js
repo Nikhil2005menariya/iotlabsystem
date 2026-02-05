@@ -6,6 +6,8 @@ const crypto = require('crypto');
 const Staff = require('../models/Staff');
 const { sendMail } = require('../services/mail.service');
 const ComponentRequest=require('../models/ComponentRequest')
+const Bill = require('../models/Bill');
+const DamagedAssetLog = require('../models/DamagedAssetLog');
 
 
 /* =========================
@@ -606,6 +608,224 @@ exports.updateComponentRequestStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update request'
+    });
+  }
+};
+
+
+
+
+/* ============================
+   UPLOAD BILL
+============================ */
+exports.uploadBill = async (req, res) => {
+  try {
+    const { title, bill_type, bill_date } = req.body;
+
+    if (!title || !bill_date || !req.file) {
+      return res.status(400).json({
+        message: 'Missing required fields'
+      });
+    }
+
+    const bill = await Bill.create({
+      title,
+      bill_type,
+      bill_date: new Date(bill_date),
+      file_name: req.file.filename,
+      file_path: req.file.path,
+      uploaded_by: req.user.id
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Bill uploaded successfully',
+      data: bill
+    });
+  } catch (err) {
+    console.error('Upload bill error:', err);
+    res.status(500).json({ message: 'Failed to upload bill' });
+  }
+};
+
+/* ============================
+   GET BILLS (FILTERABLE)
+============================ */
+exports.getBills = async (req, res) => {
+  try {
+    const { month, from, to } = req.query;
+
+    const filter = {};
+
+    // Month filter (YYYY-MM)
+    if (month) {
+      const [y, m] = month.split('-');
+      filter.bill_date = {
+        $gte: new Date(`${y}-${m}-01`),
+        $lt: new Date(`${y}-${Number(m) + 1}-01`)
+      };
+    }
+
+    // Date range filter
+    if (from && to) {
+      filter.bill_date = {
+        $gte: new Date(from),
+        $lte: new Date(to)
+      };
+    }
+
+    const bills = await Bill.find(filter)
+      .populate('uploaded_by', 'name email')
+      .sort({ bill_date: -1, createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      count: bills.length,
+      data: bills
+    });
+  } catch (err) {
+    console.error('Get bills error:', err);
+    res.status(500).json({ message: 'Failed to fetch bills' });
+  }
+};
+
+/* ============================
+   DOWNLOAD BILL
+============================ */
+exports.downloadBill = async (req, res) => {
+  try {
+    const bill = await Bill.findById(req.params.id);
+    if (!bill) {
+      return res.status(404).json({ message: 'Bill not found' });
+    }
+
+    res.download(bill.file_path, bill.file_name);
+  } catch (err) {
+    console.error('Download bill error:', err);
+    res.status(500).json({ message: 'Failed to download bill' });
+  }
+};
+
+
+
+
+exports.getDamagedAssetHistory = async (req, res) => {
+  try {
+    const { item, vendor, status, from, to } = req.query;
+
+    const matchStage = {};
+
+    /* =====================
+       STATUS FILTER
+    ===================== */
+    if (status) {
+      matchStage.status = status;
+    }
+
+    /* =====================
+       DATE RANGE FILTER
+    ===================== */
+    if (from || to) {
+      matchStage.reported_at = {};
+      if (from) matchStage.reported_at.$gte = new Date(from);
+      if (to) matchStage.reported_at.$lte = new Date(to);
+    }
+
+    /* =====================
+       AGGREGATION PIPELINE
+    ===================== */
+    const pipeline = [
+      { $match: matchStage },
+
+      // Join ItemAsset
+      {
+        $lookup: {
+          from: 'itemassets',
+          localField: 'asset_id',
+          foreignField: '_id',
+          as: 'asset'
+        }
+      },
+      { $unwind: '$asset' },
+
+      // Join Item
+      {
+        $lookup: {
+          from: 'items',
+          localField: 'asset.item_id',
+          foreignField: '_id',
+          as: 'item'
+        }
+      },
+      { $unwind: '$item' },
+    ];
+
+    /* =====================
+       ITEM NAME FILTER
+    ===================== */
+    if (item) {
+      pipeline.push({
+        $match: {
+          'item.name': { $regex: item, $options: 'i' }
+        }
+      });
+    }
+
+    /* =====================
+       VENDOR FILTER
+    ===================== */
+    if (vendor) {
+      pipeline.push({
+        $match: {
+          'item.vendor': { $regex: vendor, $options: 'i' }
+        }
+      });
+    }
+
+    /* =====================
+       FINAL PROJECTION
+    ===================== */
+    pipeline.push(
+      {
+        $project: {
+          _id: 1,
+          asset_tag: '$asset.asset_tag',
+          serial_no: '$asset.serial_no',
+          asset_status: '$asset.status',
+          asset_condition: '$asset.condition',
+
+          item_name: '$item.name',
+          sku: '$item.sku',
+          category: '$item.category',
+          vendor: '$item.vendor',
+
+          damage_status: '$status',
+          damage_reason: '$damage_reason',
+          remarks: '$remarks',
+          reported_at: 1,
+
+          faculty_email: 1,
+          faculty_id: 1,
+          student_id: 1
+        }
+      },
+      { $sort: { reported_at: -1 } }
+    );
+
+    const records = await DamagedAssetLog.aggregate(pipeline);
+
+    res.json({
+      success: true,
+      count: records.length,
+      data: records
+    });
+
+  } catch (error) {
+    console.error('Damaged asset history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch damaged asset history'
     });
   }
 };

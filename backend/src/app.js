@@ -10,7 +10,8 @@ app.use(
   cors({
     origin: [
       'http://localhost:8080', // Lovable frontend
-      'http://localhost:5173'  // Vite
+      'http://localhost:5173',  // Vite
+      'https://labflow-manager.vercel.app',
     ],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization'],

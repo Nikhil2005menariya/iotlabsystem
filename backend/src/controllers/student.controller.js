@@ -261,12 +261,27 @@ exports.requestComponent = async (req, res) => {
       category,
       quantity_requested,
       use_case,
-      urgency
+      urgency,
+      faculty_email
     } = req.body;
 
-    if (!component_name || !quantity_requested || !use_case) {
+    /* ============================
+       BASIC VALIDATION
+    ============================ */
+    if (!component_name || !quantity_requested || !use_case || !faculty_email) {
       return res.status(400).json({
         message: 'Missing required fields'
+      });
+    }
+
+    /* ============================
+       FACULTY EMAIL DOMAIN CHECK
+    ============================ */
+    const vitEmailRegex = /^[a-zA-Z0-9._%+-]+@vit\.ac\.in$/;
+
+    if (!vitEmailRegex.test(faculty_email)) {
+      return res.status(400).json({
+        message: 'Faculty email must be a valid @vit.ac.in address'
       });
     }
 
@@ -282,7 +297,39 @@ exports.requestComponent = async (req, res) => {
     }
 
     /* ============================
-       CREATE REQUEST
+       SEND MAIL FIRST (IMPORTANT)
+       ❗ DO NOT CREATE DB RECORD YET
+    ============================ */
+    const subject = 'New Component Request from Student';
+    const html = `
+      <p>A student has requested a new lab component.</p>
+      <ul>
+        <li><b>Student:</b> ${student.name} (${student.reg_no})</li>
+        <li><b>Email:</b> ${student.email}</li>
+        <li><b>Component:</b> ${component_name}</li>
+        <li><b>Category:</b> ${category || '-'}</li>
+        <li><b>Quantity:</b> ${quantity_requested}</li>
+        <li><b>Urgency:</b> ${urgency || 'medium'}</li>
+        <li><b>Use Case:</b> ${use_case}</li>
+      </ul>
+    `;
+
+    try {
+      await sendMail({
+        to: faculty_email,
+        subject,
+        html
+      });
+    } catch (mailErr) {
+      console.error('Component request mail failed:', mailErr);
+
+      return res.status(500).json({
+        message: 'Failed to send email. Component request not submitted.'
+      });
+    }
+
+    /* ============================
+       CREATE REQUEST (ONLY IF MAIL SENT)
     ============================ */
     const request = await ComponentRequest.create({
       component_name,
@@ -291,7 +338,8 @@ exports.requestComponent = async (req, res) => {
       use_case,
       urgency: urgency || 'medium',
 
-      // 🔥 REQUIRED FIELDS — FIX
+      faculty_email,
+
       student_id: student._id,
       student_reg_no: student.reg_no,
       student_email: student.email,
@@ -312,6 +360,7 @@ exports.requestComponent = async (req, res) => {
     });
   }
 };
+
 
 
 /* ============================

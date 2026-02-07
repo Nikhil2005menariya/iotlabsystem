@@ -8,6 +8,8 @@ const { sendMail } = require('../services/mail.service');
 const ComponentRequest=require('../models/ComponentRequest')
 const Bill = require('../models/Bill');
 const DamagedAssetLog = require('../models/DamagedAssetLog');
+const { PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const s3 = require('../utils/s3');
 
 
 /* =========================
@@ -614,26 +616,34 @@ exports.updateComponentRequestStatus = async (req, res) => {
 
 
 
-
 /* ============================
-   UPLOAD BILL
+   UPLOAD BILL (S3)
 ============================ */
 exports.uploadBill = async (req, res) => {
   try {
     const { title, bill_type, bill_date } = req.body;
 
     if (!title || !bill_date || !req.file) {
-      return res.status(400).json({
-        message: 'Missing required fields'
-      });
+      return res.status(400).json({ message: 'Missing required fields' });
     }
+
+    const s3Key = `bills/${Date.now()}-${req.file.originalname}`;
+
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: s3Key,
+        Body: req.file.buffer,
+        ContentType: 'application/pdf'
+      })
+    );
 
     const bill = await Bill.create({
       title,
       bill_type,
       bill_date: new Date(bill_date),
-      file_name: req.file.filename,
-      file_path: req.file.path,
+      s3_key: s3Key,
+      s3_url: `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`,
       uploaded_by: req.user.id
     });
 
@@ -642,6 +652,7 @@ exports.uploadBill = async (req, res) => {
       message: 'Bill uploaded successfully',
       data: bill
     });
+
   } catch (err) {
     console.error('Upload bill error:', err);
     res.status(500).json({ message: 'Failed to upload bill' });
@@ -649,15 +660,13 @@ exports.uploadBill = async (req, res) => {
 };
 
 /* ============================
-   GET BILLS (FILTERABLE)
+   GET BILLS
 ============================ */
 exports.getBills = async (req, res) => {
   try {
     const { month, from, to } = req.query;
-
     const filter = {};
 
-    // Month filter (YYYY-MM)
     if (month) {
       const [y, m] = month.split('-');
       filter.bill_date = {
@@ -666,7 +675,6 @@ exports.getBills = async (req, res) => {
       };
     }
 
-    // Date range filter
     if (from && to) {
       filter.bill_date = {
         $gte: new Date(from),
@@ -679,33 +687,40 @@ exports.getBills = async (req, res) => {
       .sort({ bill_date: -1, createdAt: -1 })
       .lean();
 
-    res.json({
-      success: true,
-      count: bills.length,
-      data: bills
-    });
+    res.json({ success: true, count: bills.length, data: bills });
   } catch (err) {
-    console.error('Get bills error:', err);
     res.status(500).json({ message: 'Failed to fetch bills' });
   }
 };
 
 /* ============================
-   DOWNLOAD BILL
+   DOWNLOAD / VIEW BILL (STREAM)
 ============================ */
 exports.downloadBill = async (req, res) => {
   try {
     const bill = await Bill.findById(req.params.id);
-    if (!bill) {
-      return res.status(404).json({ message: 'Bill not found' });
-    }
+    if (!bill) return res.status(404).json({ message: 'Bill not found' });
 
-    res.download(bill.file_path, bill.file_name);
+    const stream = await s3.send(
+      new GetObjectCommand({
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: bill.s3_key
+      })
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${bill.title}.pdf"`
+    );
+
+    stream.Body.pipe(res);
   } catch (err) {
     console.error('Download bill error:', err);
     res.status(500).json({ message: 'Failed to download bill' });
   }
 };
+
 
 
 

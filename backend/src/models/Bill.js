@@ -2,15 +2,25 @@ const mongoose = require('mongoose');
 
 const billSchema = new mongoose.Schema(
   {
+    /* ============================
+       BASIC BILL INFO
+    ============================ */
     title: {
       type: String,
-      required: true
+      required: true,
+      trim: true
     },
 
     bill_type: {
       type: String,
-      enum: ['electricity', 'internet', 'maintenance', 'equipment', 'other'],
-      default: 'other',
+      enum: [
+        'electricity',
+        'internet',
+        'maintenance',
+        'equipment',
+        'other'
+      ],
+      required: true,
       index: true
     },
 
@@ -20,23 +30,33 @@ const billSchema = new mongoose.Schema(
       index: true
     },
 
-    file_name: {
+    /* ============================
+       S3 STORAGE DETAILS
+    ============================ */
+    s3_key: {
+      type: String,
+      required: true,
+      unique: true
+    },
+
+    s3_url: {
       type: String,
       required: true
     },
 
-    file_path: {
-      type: String,
-      required: true
-    },
-
+    /* ============================
+       UPLOAD METADATA
+    ============================ */
     uploaded_by: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Staff',
-      required: true
+      required: true,
+      index: true
     }
   },
-  { timestamps: true }
+  {
+    timestamps: true // createdAt, updatedAt
+  }
 );
 
 module.exports = mongoose.model('Bill', billSchema);

@@ -65,11 +65,11 @@ exports.raiseTransaction = async (req, res) => {
     }
 
     // ✅ Faculty email domain check
-    if (!faculty_email.endsWith('@vit.ac.in')) {
-      return res.status(400).json({
-        error: 'Faculty email must be a valid @vit.ac.in address'
-      });
-    }
+    // if (!faculty_email.endsWith('@vit.ac.in')) {
+    //   return res.status(400).json({
+    //     error: 'Faculty email must be a valid @vit.ac.in address'
+    //   });
+    // }
 
     /* ============================
        FETCH STUDENT
